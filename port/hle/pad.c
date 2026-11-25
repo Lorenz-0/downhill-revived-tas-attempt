@@ -10,6 +10,7 @@
    comes from online.c's pads_read: the host's controller or a script (online too: the race is
    this PC's own, the others' riders are puppets). */
 #include "hle.h"
+#include "tas.h"
 #include "../include/fps.h"
 
 #include <stdlib.h>
@@ -143,8 +144,9 @@ int port_controls_capturing(void);  /* controls_settings.c */
 
 /* Just-in-time frames (kernel.c): the controller read again into the frames pad_vsync just wrote,
    at the end of the wait after the VBLANK, so the game reads the newest state. Only the input
-   bytes change (no new frame counter). Scripted and online input stay as pad_vsync read them, and
-   so does the held-back input while PC SETTINGS > Controls waits for a key or button (pads_read). */
+   bytes change (no new frame counter). Scripted input stays as pad_vsync read it, and so do an
+   online race's, a TAS movie's (tas.c: what it plays, and the input it records, is the pad_vsync
+   one), and the held-back input while PC SETTINGS > Controls waits for a key or button (pads_read). */
 void pad_refresh(void)
 {
     static int live = -1;
@@ -152,9 +154,12 @@ void pad_refresh(void)
     if (port_controls_capturing()) return;
     if (live < 0)
         live = !getenv("DHD_AUTOPAD") && !getenv("DHD_AUTOPAD_FRAMES") && !getenv("DHD_NAV") &&
-               !getenv("DHD_NET_CREATE") && !getenv("DHD_NET_JOIN") &&
-               !getenv("DHD_TAS_PLAY") && !getenv("DHD_TAS_RECORD");
+               !getenv("DHD_NET_CREATE") && !getenv("DHD_NET_JOIN");
     if (!live || pads_online())  /* the ONLINE menu's race: its script and pads, as with DHD_NET_* */
+        return;
+    /* The TAS state, not DHD_TAS_*: a movie that failed to load, or an online session that refused
+       one, leaves a live player's refresh alone. */
+    if (tas_playing() || tas_recording())
         return;
     for (port = 0; port < 2; port++)
         for (slot = 0; slot < 4; slot++) {

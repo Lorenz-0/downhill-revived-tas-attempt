@@ -453,10 +453,8 @@ int host_pad_script(int player, HostPad *out)
     size_t i;
     memset(out, 0, sizeof *out);
     out->right_x = out->right_y = out->left_x = out->left_y = 128;
-    if (tas_playing()) {
-        tas_pad(player, out);
-        return 1;
-    }
+    if (tas_playing() && tas_pad(player, out))
+        return 1;  /* a movie drives every pad; a refused one leaves the scripts and the device */
     static HleEnv autopad_env, frames_env, nav_env;  /* online.c changes DHD_NAV (hle_env_changed) */
     const char *script = hle_env(&autopad_env, "DHD_AUTOPAD");
     const char *frame_script = hle_env(&frames_env, "DHD_AUTOPAD_FRAMES");

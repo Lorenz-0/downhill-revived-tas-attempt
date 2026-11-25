@@ -1,15 +1,30 @@
-/* Tool-assisted speedrun (TAS): per-frame input movie record/playback and frame control. */
+/* Tool-assisted speedrun (TAS): per-field input movie record/playback and frame advance.
+
+   Offline only, by design. The pads_read hook captures whatever this game consumed, and in an
+   online race the local player's pad never goes through host_pad_script (online.c reads the
+   device for it), so playback would drive players 2-4 and not player 1: a half-applied movie
+   is worse than none. An online session therefore turns both directions off at the first field
+   (pads_online, online.c), with one line in dhd.log, and leaves the session untouched.
+
+   Frame advance holds the game thread at the start of vsync() until the control file grants a
+   field, so it needs a host sleep that really waits. The browser's host_sleep_ms is a no-op
+   (port/web/www/worker.js): pausing there would spin the worker and never let the page deliver
+   a command, so it is measured once (host_can_block) and frame advance stays off where it does
+   not hold.
+
+   See tas.h for the movie format, the control file's commands and the input timing. */
 #include "tas.h"
 #include "hle.h"
+#include "../host/host_end.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
 extern uint64_t kernel_vsync_count;
 
 enum { TAS_PLAYERS = 4 };
+enum { TAS_COLUMNS = 1 + TAS_PLAYERS * 5 };   /* field + (buttons, rx, ry, lx, ly) a player */
 
 static const uint16_t pressure_order[12] = {PAD_RIGHT, PAD_LEFT, PAD_UP, PAD_DOWN, PAD_TRIANGLE, PAD_CIRCLE,
                                             PAD_CROSS, PAD_SQUARE, PAD_L1, PAD_R1, PAD_L2, PAD_R2};
@@ -22,12 +37,15 @@ typedef struct {
 typedef struct {
     uint64_t field;
     TasPad pads[TAS_PLAYERS];
-    int has;
+    int has;                 /* the field was captured (cur_rec only; a movie frame is always set) */
 } TasFrame;
 
 static int initialized;
 static int playing, recording;
-static int paused, step_requested;
+static int paused;
+static int step_granted;      /* one field released by the control file, cleared as it runs */
+static int block_ok = -1;     /* this host can hold the game between fields; measured once */
+static int online_refused;    /* an online session ended the TAS, said once */
 static const char *play_path, *record_path, *step_path;
 
 static TasFrame *movie;
@@ -39,15 +57,17 @@ static int cur_rec_field_set;
 static uint64_t cur_rec_field;
 
 static FILE *rec_fp;
+static unsigned long rec_fields;
+static int end_registered;
 
 static void tas_log(const char *fmt, ...)
 {
+    char line[512];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "tas: ");
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+    vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
+    hle_log("tas: %s\n", line);
 }
 
 static void parse_path_env(const char *name, const char **out)
@@ -66,80 +86,184 @@ static int parse_u16_hex(const char *s, uint16_t *out)
 {
     char *e = NULL;
     unsigned long v = strtoul(s, &e, 16);
-    if (e == s || *e) return 0;
+    if (e == s || *e || v > 0xFFFF) return 0;
     *out = (uint16_t)v;
     return 1;
 }
 
-static int parse_u8(const char *s, uint8_t *out)
+static int parse_u8_dec(const char *s, uint8_t *out)
 {
     char *e = NULL;
-    unsigned long v = strtoul(s, &e, 0);
+    unsigned long v = strtoul(s, &e, 10);
     if (e == s || *e || v > 255) return 0;
     *out = (uint8_t)v;
     return 1;
 }
 
-static int parse_u64(const char *s, uint64_t *out)
+static int parse_u64_dec(const char *s, uint64_t *out)
 {
     char *e = NULL;
-    unsigned long long v = strtoull(s, &e, 0);
+    unsigned long long v = strtoull(s, &e, 10);
     if (e == s || *e) return 0;
     *out = (uint64_t)v;
     return 1;
 }
 
-static void movie_push(TasFrame f)
+static int movie_push(TasFrame f)
 {
     if (movie_len == movie_cap) {
         size_t ncap = movie_cap ? movie_cap * 2 : 1024;
         TasFrame *n = (TasFrame *)realloc(movie, ncap * sizeof *movie);
-        if (!n) { tas_log("out of memory loading movie"); return; }
+        if (!n) return 0;
         movie = n;
         movie_cap = ncap;
     }
     movie[movie_len++] = f;
+    return 1;
 }
 
-static void load_movie(const char *path)
+/* 1 when the movie is playable. A movie that cannot be read, holds no field, or is out of order
+   is refused whole: playback stays off rather than driving the game with a partial or empty
+   movie, and the pad keeps its other sources. */
+static int load_movie(const char *path)
 {
     FILE *f = fopen(path, "r");
     char line[1024];
-    int lineno = 0;
-    if (!f) { tas_log("cannot open play movie: %s", path); return; }
+    int lineno = 0, refused = 0, order_refused = 0;
+    uint64_t previous = 0;
+    int have_previous = 0;
+    if (!f) {
+        tas_log("cannot read play movie '%s': playback off", path);
+        return 0;
+    }
     while (fgets(line, sizeof line, f)) {
         char *p = line;
-        char *tok[1 + TAS_PLAYERS * 5];
+        char *tok[TAS_COLUMNS];
         int nt = 0;
         lineno++;
         while (*p == ' ' || *p == '\t') p++;
         if (*p == 0 || *p == '\n' || *p == '\r' || *p == '#') continue;
         trim(p);
-        for (char *t = strtok(p, " \t"); t && nt < (int)(1 + TAS_PLAYERS * 5); t = strtok(NULL, " \t"))
+        for (char *t = strtok(p, " \t"); t && nt < TAS_COLUMNS; t = strtok(NULL, " \t"))
             tok[nt++] = t;
-        if (nt == 0) continue;
-        if (nt != 1 + TAS_PLAYERS * 5) {
-            tas_log("%s:%d: expected %d columns, got %d", path, lineno, 1 + TAS_PLAYERS * 5, nt);
+        if (nt != TAS_COLUMNS) {
+            tas_log("%s:%d: expected %d columns, got %d", path, lineno, TAS_COLUMNS, nt);
+            refused++;
             continue;
         }
         TasFrame fr;
         memset(&fr, 0, sizeof fr);
-        if (!parse_u64(tok[0], &fr.field)) { tas_log("%s:%d: bad field", path, lineno); continue; }
+        if (!parse_u64_dec(tok[0], &fr.field)) {
+            tas_log("%s:%d: bad field", path, lineno);
+            refused++;
+            continue;
+        }
         int ok = 1;
         for (int i = 0; i < TAS_PLAYERS && ok; i++) {
             int base = 1 + i * 5;
             ok &= parse_u16_hex(tok[base + 0], &fr.pads[i].buttons);
-            ok &= parse_u8(tok[base + 1], &fr.pads[i].right_x);
-            ok &= parse_u8(tok[base + 2], &fr.pads[i].right_y);
-            ok &= parse_u8(tok[base + 3], &fr.pads[i].left_x);
-            ok &= parse_u8(tok[base + 4], &fr.pads[i].left_y);
+            ok &= parse_u8_dec(tok[base + 1], &fr.pads[i].right_x);
+            ok &= parse_u8_dec(tok[base + 2], &fr.pads[i].right_y);
+            ok &= parse_u8_dec(tok[base + 3], &fr.pads[i].left_x);
+            ok &= parse_u8_dec(tok[base + 4], &fr.pads[i].left_y);
         }
-        if (!ok) { tas_log("%s:%d: bad value", path, lineno); continue; }
-        fr.has = 1;
-        movie_push(fr);
+        if (!ok) {
+            tas_log("%s:%d: bad value", path, lineno);
+            refused++;
+            continue;
+        }
+        if (have_previous && fr.field <= previous) {
+            tas_log("%s:%d: field %llu does not follow %llu", path, lineno,
+                    (unsigned long long)fr.field, (unsigned long long)previous);
+            order_refused++;
+            continue;
+        }
+        if (!movie_push(fr)) {
+            tas_log("out of memory after %zu field(s): the rest of '%s' is not played", movie_len, path);
+            break;
+        }
+        previous = fr.field;
+        have_previous = 1;
     }
     fclose(f);
-    tas_log("loaded %zu frames from %s", movie_len, path);
+    if (!movie_len) {
+        tas_log("play movie '%s' has no usable field: playback off", path);
+        return 0;
+    }
+    if (refused || order_refused)
+        tas_log("playing %zu field(s) from '%s' (%d line(s) refused)", movie_len, path, refused + order_refused);
+    else
+        tas_log("playing %zu field(s) from '%s'", movie_len, path);
+    return 1;
+}
+
+static void record_close(void);
+static void record_failed(const char *why);
+
+static void record_open(const char *path)
+{
+    rec_fp = fopen(path, "w");
+    if (!rec_fp) {
+        tas_log("cannot write record movie '%s': recording off", path);
+        return;
+    }
+    fprintf(rec_fp, "# DHDR TAS movie v1\n");
+    fprintf(rec_fp, "# field p0(btn rx ry lx ly) p1(...) p2(...) p3(...)\n");
+    if (fflush(rec_fp) != 0) {
+        record_failed("cannot write the header");
+        return;
+    }
+    recording = 1;
+    rec_fields = 0;
+    if (!end_registered) {
+        end_registered = 1;
+        host_end_add(HOST_END_LOG, "tas movie", record_close);  /* the file is closed on every way out */
+    }
+    tas_log("recording to '%s'", path);
+}
+
+/* Closed here and by the end handler: the fields written so far stay in the file. */
+static void record_close(void)
+{
+    if (!rec_fp) return;
+    if (fflush(rec_fp) != 0 || ferror(rec_fp))
+        tas_log("recording ended with a write error: %lu field(s) kept in '%s'", rec_fields, record_path);
+    else
+        tas_log("recording ended: %lu field(s) in '%s'", rec_fields, record_path);
+    fclose(rec_fp);
+    rec_fp = NULL;
+    recording = 0;
+}
+
+/* A failed write ends the recording instead of silently dropping the rest: the file keeps the
+   complete fields before it (one line each, flushed as they are written). */
+static void record_failed(const char *why)
+{
+    tas_log("recording stopped: %s on '%s' (%lu field(s) kept)", why, record_path, rec_fields);
+    if (rec_fp) fclose(rec_fp);
+    rec_fp = NULL;
+    recording = 0;
+}
+
+/* The browser's host_sleep_ms does nothing, so a paused loop there would spin the worker and
+   the page could never write a command. A 4 ms sleep the wall clock does not see is no sleep.
+   Measured the first time a pause is asked for, so a run that never pauses pays nothing. */
+static int host_can_block(void)
+{
+    double before = host_wall_seconds();
+    host_sleep_ms(4);
+    return host_wall_seconds() - before >= 0.001;
+}
+
+/* 1 when a pause may hold this host; 0 (with one line) when it may not. */
+static int can_pause_here(void)
+{
+    if (block_ok < 0) {
+        block_ok = host_can_block();
+        if (!block_ok)
+            tas_log("this build's host sleep does not block (the browser): frame advance is off");
+    }
+    return block_ok;
 }
 
 void tas_init(void)
@@ -150,64 +274,102 @@ void tas_init(void)
     parse_path_env("DHD_TAS_RECORD", &record_path);
     parse_path_env("DHD_TAS_STEP", &step_path);
     const char *pause = getenv("DHD_TAS_PAUSE");
-    paused = pause && *pause && strcmp(pause, "0") != 0;
-    if (play_path) {
-        playing = 1;
-        load_movie(play_path);
-    }
-    if (record_path) {
-        rec_fp = fopen(record_path, "w");
-        if (!rec_fp) {
-            tas_log("cannot open record movie: %s", record_path);
-        } else {
-            recording = 1;
-            fprintf(rec_fp, "# DHDR TAS movie v1\n");
-            fprintf(rec_fp, "# field p0(btn rx ry lx ly) p1(...) p2(...) p3(...)\n");
-            fflush(rec_fp);
-            tas_log("recording to %s", record_path);
+    int want_pause = pause && *pause && strcmp(pause, "0") != 0;
+    if (play_path) playing = load_movie(play_path);
+    if (record_path) record_open(record_path);
+    if (want_pause) {
+        if (!step_path)
+            tas_log("DHD_TAS_PAUSE needs DHD_TAS_STEP=<file> to release a field: running unpaused");
+        else if (can_pause_here()) {
+            paused = 1;
+            tas_log("paused at the start; write step/run/pause/quit to '%s'", step_path);
         }
     }
-    if (paused) tas_log("paused at start (DHD_TAS_PAUSE=1)");
 }
 
 int tas_playing(void) { tas_init(); return playing; }
 int tas_recording(void) { tas_init(); return recording; }
 int tas_paused(void) { tas_init(); return paused; }
 
-static void clear_step_file(void)
+enum TasCommand { TAS_NONE, TAS_STEP, TAS_RUN, TAS_PAUSE, TAS_QUIT, TAS_UNKNOWN };
+
+/* The control file is consumed: every command is a fresh file, so nothing can be replayed by a
+   later pause. */
+static enum TasCommand read_command(void)
 {
-    if (step_path) remove(step_path);
+    FILE *f;
+    char cmd[64] = {0};
+    if (!step_path) return TAS_NONE;
+    f = fopen(step_path, "r");
+    if (!f) return TAS_NONE;
+    if (!fgets(cmd, sizeof cmd, f)) cmd[0] = 0;
+    fclose(f);
+    remove(step_path);
+    trim(cmd);
+    if (!cmd[0] || !strcmp(cmd, "step")) return TAS_STEP;
+    if (!strcmp(cmd, "run") || !strcmp(cmd, "resume")) return TAS_RUN;
+    if (!strcmp(cmd, "pause")) return TAS_PAUSE;
+    if (!strcmp(cmd, "quit")) return TAS_QUIT;
+    tas_log("unknown command '%s' (step, run, resume, pause, quit)", cmd);
+    return TAS_UNKNOWN;
 }
 
-static void poll_step_control(void)
+static void tas_quit(void)
 {
-    if (!step_path) return;
-    FILE *f = fopen(step_path, "r");
-    char cmd[64] = {0};
-    if (!f) return;
-    if (fgets(cmd, sizeof cmd, f)) trim(cmd);
-    fclose(f);
-    if (cmd[0] == 0 || !strcmp(cmd, "step")) {
-        step_requested = 1;
-        clear_step_file();
-        return;
+    tas_log("quit: the game ends, as EXIT GAME's Yes does");
+    paused = 0;
+    playing = 0;
+    if (recording) record_close();
+    host_service_gs_window_close();
+}
+
+/* Offline only: an online session stops both directions before any pad of the field is read. */
+static void refuse_online(void)
+{
+    if (online_refused || (!playing && !recording)) return;
+    online_refused = 1;
+    if (recording) record_close();
+    if (playing) {
+        playing = 0;
+        tas_log("online session: playback off (TAS is offline only)");
     }
-    if (!strcmp(cmd, "run") || !strcmp(cmd, "resume")) { paused = 0; clear_step_file(); return; }
-    if (!strcmp(cmd, "pause")) { paused = 1; clear_step_file(); return; }
-    clear_step_file();
+    paused = 0;
+    step_granted = 0;
 }
 
 void tas_frame_advance_wait(void)
 {
     tas_init();
-    if (!paused) { poll_step_control(); return; }
+    refuse_online();
+    if (!paused) {
+        switch (read_command()) {
+        case TAS_PAUSE:
+            /* Without a control file a pause could never be released: refuse it, never hang. */
+            if (!step_path) tas_log("'pause' needs DHD_TAS_STEP=<file>: ignored");
+            else if (can_pause_here()) { paused = 1; tas_log("paused"); }
+            break;
+        case TAS_QUIT: tas_quit(); break;
+        case TAS_STEP:
+            /* While running, a step is refused outright: holding it for a later pause would move
+               a field nobody asked for at that pause. */
+            tas_log("'step' ignored while running (write 'pause' first)");
+            break;
+        default: break;
+        }
+        return;
+    }
     for (;;) {
-        poll_step_control();
-        if (step_requested || !paused) break;
+        switch (read_command()) {
+        case TAS_STEP: step_granted = 1; break;
+        case TAS_RUN: paused = 0; tas_log("running"); break;
+        case TAS_QUIT: tas_quit(); return;
+        default: break;  /* already paused, or nothing new */
+        }
+        if (step_granted || !paused) break;
         host_service_gs_pump_messages();
         host_sleep_ms(16);
     }
-    if (step_requested) step_requested = 0;
+    step_granted = 0;  /* exactly the field this call releases */
 }
 
 static TasFrame *find_frame(uint64_t field)
@@ -272,14 +434,23 @@ void tas_capture(int player, const HostPad *out)
 void tas_vsync(void)
 {
     tas_init();
-    if (recording && rec_fp && cur_rec.has) {
-        fprintf(rec_fp, "%llu", (unsigned long long)cur_rec.field);
-        for (int i = 0; i < TAS_PLAYERS; i++) {
-            TasPad *p = &cur_rec.pads[i];
-            fprintf(rec_fp, " %04X %u %u %u %u", (unsigned)p->buttons, p->right_x, p->right_y, p->left_x, p->left_y);
-        }
-        fprintf(rec_fp, "\n");
-        fflush(rec_fp);
-        cur_rec.has = 0;
+    if (!recording || !rec_fp || !cur_rec.has) return;
+    if (fprintf(rec_fp, "%llu", (unsigned long long)cur_rec.field) < 0) {
+        record_failed("write failed");
+        return;
     }
+    for (int i = 0; i < TAS_PLAYERS; i++) {
+        TasPad *p = &cur_rec.pads[i];
+        if (fprintf(rec_fp, " %04X %u %u %u %u", (unsigned)p->buttons, p->right_x, p->right_y,
+                    p->left_x, p->left_y) < 0) {
+            record_failed("write failed");
+            return;
+        }
+    }
+    if (fprintf(rec_fp, "\n") < 0 || fflush(rec_fp) != 0 || ferror(rec_fp)) {
+        record_failed("write failed");
+        return;
+    }
+    cur_rec.has = 0;
+    rec_fields++;
 }
