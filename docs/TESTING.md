@@ -214,6 +214,22 @@ Menus and riding:
 | `DHD_RATE_WATCH=path`, `DHD_RATE_WATCH_WORDS=ADDR,...`, `DHD_RATE_WATCH_STOP=F` | after every update a line of the game's field counter, the update's step and up to 64 EE words (hex addresses); the game quits at field F (`port/hle/rate_audit.c`, finding 255) |
 | `DHD_HEADLESS=1` | no message boxes (a bad disc only logs), and no launcher (Linux smoke runs) |
 
+TAS (finding 285; `port/hle/tas.c`. Offline only: an online session refuses both directions at its
+first field):
+
+| Variable | What |
+|---|---|
+| `DHD_TAS_PLAY=FILE` | play a movie: one field a line, 21 columns, `#` comments (tas.h has the format). A file that cannot be read, holds no usable field or is out of order turns playback off and says which file and why; the pads keep their other sources |
+| `DHD_TAS_RECORD=FILE` | record the input the game consumes, a line a field, flushed as it goes and closed at the end (or on a failed write, with the complete fields before it kept) |
+| `DHD_TAS_PAUSE=1` | start paused. Needs `DHD_TAS_STEP`: without it the game runs unpaused and the log says so |
+| `DHD_TAS_STEP=FILE` | the control file, read once a field and deleted after every command: an empty file or `step` (one more field, while paused), `run` / `resume`, `pause`, `quit` (ends the game, as EXIT GAME's Yes). Unknown content is refused by name. A `step` written while running is ignored |
+
+Write a run and play it back with `DHD_FRAME_CLOCK=1` both times. A TAS run takes its pad at the
+VBLANK and never through the just-in-time refresh (pad.c), so it plays one field behind a live
+player in both directions: that is what makes a recording and its playback the same run. Frame
+advance needs a host sleep that blocks, so it is off in the browser, whose `host_sleep_ms` is a
+no-op; the log says so when a pause is asked for there.
+
 Online:
 
 | Variable | What |

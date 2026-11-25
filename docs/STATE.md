@@ -145,6 +145,12 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   its drawer `D_00287308`) takes a tap left or right of that row as Left / Right and on it as Cross;
   one with its own Left / Right slots (AUDIO / OTHER) takes a row tap as the cursor there and, for a
   row whose value is no number (a switch), Right, never Cross, its keep-and-close (finding 282).
+- **TAS** (`port/hle/tas.c`, finding 285): per-field input movies for all four pads
+  (`DHD_TAS_PLAY`, `DHD_TAS_RECORD`) and pause/frame advance (`DHD_TAS_PAUSE`, `DHD_TAS_STEP`) for
+  building a run. Offline only (an online session refuses it at its first field); it takes the
+  pad at the VBLANK, the point a recording samples, so its input plays one field behind a hand
+  player's in both directions. No savestates, rewind or editor yet; a movie is valid only for the
+  boot that produced it.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's
   `disc_problem`: ISO 9660, SYSTEM.CNF booting SCUS_971.77, the whole declared volume), then the
   game's data check in the core. Desktop launcher uses a Rust file-reader FFI adapter; Android's

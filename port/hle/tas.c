@@ -217,7 +217,10 @@ static void record_open(const char *path)
     rec_fields = 0;
     if (!end_registered) {
         end_registered = 1;
-        host_end_add(HOST_END_LOG, "tas movie", record_close);  /* the file is closed on every way out */
+        /* Closed when the module's main returns (host_end.h's __wasm__ form is atexit: a module
+           unit's registration runs before the host's host_end stages). Every field is flushed as
+           it is written, so even a crash keeps the complete fields before it. */
+        host_end_add(HOST_END_LOG, "tas movie", record_close);
     }
     tas_log("recording to '%s'", path);
 }
