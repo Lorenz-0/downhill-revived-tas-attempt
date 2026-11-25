@@ -19,6 +19,11 @@
      <field> <b0> <rx0> <ry0> <lx0> <ly0> <b1> ... <b3> <rx3> <ry3> <lx3> <ly3>
    field is kernel_vsync_count (decimal, strictly increasing), b is the PAD_* bitmask in hex,
    sticks are 0-255 decimal (128 centred). Player 2 is p1, and so on.
+   Whole or nothing: one line that is not exactly these 21 columns (an extra column too), a field
+   that is not digits only or does not strictly increase, a button word past 4 hex digits, a
+   stick past 255, a truncated line, a read error, or an allocation that fails part way refuses
+   the whole movie, and none of it is played. The log names the file, the line and the fault, then
+   says `play movie '...' refused: playback off` once.
 
    Timing: a TAS run samples the pad at the VBLANK, the point pad_vsync() fills the frame the
    game reads, and never through the just-in-time refresh (pad.c) that a live player's input

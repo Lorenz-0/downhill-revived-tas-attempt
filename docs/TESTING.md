@@ -99,6 +99,30 @@ after a version change before a live check.
 | `port/tools/audio_race_compare.py` | one race's sound in PCSX2 (an SPU2 capture hook) and in the port, compared by level and by voice (finding 133) |
 | `port/tools/rustgs.py test --target x86_64-pc-windows-msvc -- --test native_spirv` | the native and the exact renderer's SPIR-V for every pipeline stage (raster.wgsl for every raster key too), made as wgpu-hal's Vulkan backend makes it, with no texture passed into a function (Mali's r54 compiler crashes on that, finding 153) and none of the forms LLVM 9 turns into `llvm.usub.sat`, `llvm.uadd.sat` or a funnel shift (PowerVR Rogue's driver 1.13 crashes on them, finding 170). `DHD_SPIRV_OUT=DIR` keeps the `.spv` files; with `DHD_MALIOC` every stage is also compiled by malioc for `DHD_MALIOC_CORE` (default `Mali-G57`); `DHD_NATIVE_WGSL=FILE` (`DHD_RASTER_WGSL=FILE`) compares another native.wgsl (raster.wgsl) |
 
+## The TAS unit
+
+`port/hle/tas.c` (finding 285) has its own tests, on the host and without the game: a stub host
+drives the unit through the order the game itself uses, one field at a time —
+`tas_frame_advance_wait()` (kernel.c: the online gate and the pause), `++kernel_vsync_count`,
+`tas_pad()` / `tas_capture()` (pads_read), `tas_vsync()` (kernel.c: the recorded line).
+
+    python port/tools/tas_selftest.py
+
+60 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+cover: playback and recording offline through that order; an online session dropping playback,
+recording and a pause before any pad of the field is read, with its file closed and its message
+said once; `DHD_TAS_PAUSE` and a `pause` command in an online session never holding the game, and
+a paused session entering one released rather than blocked; every way a movie is refused (columns,
+order, sign, overflow, a truncated line, a missing file) leaving nothing playable; the same for an
+allocation failure, by a second build linked with `--wrap=realloc`; and the recording's file closed
+by `quit`, by the end of the game and by a failed write. Two checks link such a build (`--wrap`
+needs GNU ld); a toolchain without it skips them and says so. `tools/check.py quick` runs the
+suite, and so does the `checks` workflow.
+
+What it cannot show: the game itself. Whether the field the game consumes is the field the movie
+names, and whether a recorded run plays back to the same state, are the state-trace checks in
+"Goal and acceptance" of the finding, on a machine with the toolchain and the disc.
+
 ## The state trace
 
 The gate for a change that must not change the game (finding 081, the trace as it is since 205):
@@ -219,10 +243,10 @@ first field):
 
 | Variable | What |
 |---|---|
-| `DHD_TAS_PLAY=FILE` | play a movie: one field a line, 21 columns, `#` comments (tas.h has the format). A file that cannot be read, holds no usable field or is out of order turns playback off and says which file and why; the pads keep their other sources |
+| `DHD_TAS_PLAY=FILE` | play a movie: one field a line, 21 columns, `#` comments (tas.h has the format). A movie is played whole or not at all: a file that cannot be read, holds no field, or holds one line with the wrong number of columns, an out-of-order or repeated field, or a value out of range is refused whole (`play movie ... refused: playback off`, with the line and the reason before it) and the pads keep their other sources |
 | `DHD_TAS_RECORD=FILE` | record the input the game consumes, a line a field, flushed as it goes and closed at the end (or on a failed write, with the complete fields before it kept) |
 | `DHD_TAS_PAUSE=1` | start paused. Needs `DHD_TAS_STEP`: without it the game runs unpaused and the log says so |
-| `DHD_TAS_STEP=FILE` | the control file, read once a field and deleted after every command: an empty file or `step` (one more field, while paused), `run` / `resume`, `pause`, `quit` (ends the game, as EXIT GAME's Yes). Unknown content is refused by name. A `step` written while running is ignored |
+| `DHD_TAS_STEP=FILE` | the control file, read once a field and deleted after every command: an empty file or `step` (one more field, while paused), `run` / `resume`, `pause`, `quit` (ends the game, as EXIT GAME's Yes). Unknown content is refused by name. A `step` written while running is ignored; a `pause` in an online session is refused |
 
 Write a run and play it back with `DHD_FRAME_CLOCK=1` both times. A TAS run takes its pad at the
 VBLANK and never through the just-in-time refresh (pad.c), so it plays one field behind a live

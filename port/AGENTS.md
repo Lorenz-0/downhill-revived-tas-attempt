@@ -23,7 +23,9 @@ renderer, one code path). What is where: `docs/STATE.md`, "The port".
   SETTINGS reads the generated `port/hle/settings_table.h`. Add a setting there, not in C.
 - Players' text: `port/release/`; it must not name another server than `wss://dhd.skuza.app`.
 - Tests: `python port/tools/test_runtime.py`, `python port/tools/test_gs_wgpu.py`,
-  `python port/net/build_tests.py`; game runs and their harness: `docs/TESTING.md`.
+  `python port/net/build_tests.py`; the TAS unit on its own, through the game's field order and
+  with no game (`python port/tools/tas_selftest.py`, finding 285); game runs and their harness:
+  `docs/TESTING.md`.
 
 Check before you hand back: `python tools/check.py port` (core + host build and unit tests);
 add the state trace when the change can touch game state.

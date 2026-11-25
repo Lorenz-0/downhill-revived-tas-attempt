@@ -1,4 +1,5 @@
-# The public never-commit rules and the docs linter on every push and pull request.
+# The public never-commit rules and the docs linter on every push and pull request, and the TAS
+# unit's own tests on the host (no game, no toolchain beyond gcc).
 # The same checks run locally as the pre-commit hook (python tools/hooks/install.py).
 name: checks
 on:
@@ -18,3 +19,5 @@ jobs:
         run: python tools/check_tree.py
       - name: docs linter (findings, citations, paths)
         run: python tools/check_docs.py
+      - name: TAS unit, on a stub host through the game's field order (finding 285)
+        run: python port/tools/tas_selftest.py
