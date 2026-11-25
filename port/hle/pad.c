@@ -152,7 +152,8 @@ void pad_refresh(void)
     if (port_controls_capturing()) return;
     if (live < 0)
         live = !getenv("DHD_AUTOPAD") && !getenv("DHD_AUTOPAD_FRAMES") && !getenv("DHD_NAV") &&
-               !getenv("DHD_NET_CREATE") && !getenv("DHD_NET_JOIN");
+               !getenv("DHD_NET_CREATE") && !getenv("DHD_NET_JOIN") &&
+               !getenv("DHD_TAS_PLAY") && !getenv("DHD_TAS_RECORD");
     if (!live || pads_online())  /* the ONLINE menu's race: its script and pads, as with DHD_NET_* */
         return;
     for (port = 0; port < 2; port++)

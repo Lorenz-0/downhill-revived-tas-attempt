@@ -7,6 +7,7 @@
    Interrupts are delivered at kernel entries and while every thread waits: VBLANK_START and
    VBLANK_END at 59.94 Hz of host time, the alarms (SetAlarm) on the same clock. */
 #include "hle.h"
+#include "tas.h"
 #include "../gs/gs.h"
 #include "../gs/present.h"
 #include "timer.h"
@@ -856,6 +857,7 @@ static void stall_log(void)
 
 static void vsync(void)
 {
+    tas_frame_advance_wait();
     stall_log();
     slow_frame();
     port_clock_observe();
@@ -925,6 +927,7 @@ static void vsync(void)
         pad_refresh();  /* the game reads the pad after this VBLANK: the state at the end of the wait */
     }
     disc_check_field(kernel_vsync_count);  /* host-side work only: no game state */
+    tas_vsync();
     state_trace_field(kernel_vsync_count, next_vsync);  /* DHD_STATE_TRACE: the end of the field */
 }
 
