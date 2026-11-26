@@ -1,11 +1,22 @@
 /* A savestate for the TAS (finding 286, stage 1). See savestate.h.
 
-   The blocks are the state trace's own list where it can be reached — RAM, the EE thread stacks,
-   the scratchpad, the HLE window, VU0/VU1's memory, the CPU's registers, the whole GS prefix —
-   plus the two layers the trace leaves out because they are host state: the kernel's threads,
-   semaphores, alarms and counters, and padman's frames. The renderer, the sound device, the disc's
-   open files and the graphics queue are not state in this sense (finding 286: they are re-creatable
-   or re-openable) and the first cut leaves them alone deliberately.
+   The blocks are the state trace's own list where it can be reached — RAM, the scratchpad, the HLE
+   window, VU0/VU1's memory, the CPU's registers — plus the GS prefix (streamed, below) and the two
+   layers the trace leaves out because they are host state: the kernel's threads, semaphores, alarms
+   and counters, and padman's frames. The renderer, the sound device, the disc's open files and the
+   graphics queue are not state in this sense (finding 286: they are re-creatable or re-openable).
+
+   Two things this unit has learned the hard way, both of them about where a copy may read and write:
+
+   - The 64 EE thread stacks at 0x06000000 are committed page by page, per slot, with a guard page
+     each: copying the whole 16 MiB area reads pages that were never committed and the process ends
+     as the guest's own fault does. They are not in a savestate (finding 286).
+   - A 4 MiB array here does not fit the module's data — the wasm link refuses it ("initial memory
+     too small") — and taking it from the heap means growing the module's memory into a 4 MiB run,
+     which is not memory this unit can rely on being committed. So the GS prefix is *streamed*: one
+     static chunk at a time, straight into (or out of) the file, through the two piece services in
+     host_api.h. Nothing here is malloc'd and nothing here is bigger than 64 KiB plus the kernel's
+     and padman's own images.
 
    A savestate belongs to the session and the build that wrote it: the code's live frames are host
    memory that a fresh boot has not got (finding 286's one obstacle), so loading is supported within
@@ -24,53 +35,25 @@ extern ps2_cpu ps2;
 extern uint64_t kernel_vsync_count;   /* kernel.c: the field a savestate belongs to */
 
 /* The format. A block is a name and its bytes, in a fixed order: the reader checks every name and
-   size before it writes one byte, so a file that is not this state is refused whole. */
+   size, and the file's own length, before it writes one byte of the machine. */
 #define SS_MAGIC "DHDSTAT1"
-enum { SS_VERSION = 1, SS_MAX_BLOCKS = 12 };
+enum {
+    SS_VERSION = 1,
+    SS_MAX_BLOCKS = 12,
+    SS_CHUNK = 64 * 1024,              /* the GS stream's piece, and a module static's sensible size */
+    KERNEL_IMAGE_MAX = 256 * 1024,     /* kernel.c's KernelState is about 205 KiB */
+    PAD_IMAGE_MAX = 4096
+};
 typedef struct {
     char magic[8];
     uint32_t version, field, blocks, total;
 } SsHeader;
 
-/* The images of the state that is not in guest memory: the GS prefix (4 MiB, gs.h) and the
-   kernel's and padman's own state, each sized by its owner at the first use and kept from then on.
-
-   They are the heap's, not the module's data, for a measured reason: the core's data image already
-   runs from 0x70200000 to about 0x70D9C000 inside an initial memory that ends at 0x70E00000
-   (build_wasm.py), so a 4 MiB array here is "initial memory too small" at the wasm link — the first
-   cut of this unit failed to build for exactly that. state_trace.c hands a malloc'd packet to a host
-   service the same way (GADDR(packet), host_service_gs_trace_pop), so a heap buffer is a buffer the
-   host services can be given in both builds. */
-static void *gs_image;   /* offsetof(Gs, sync) bytes: the GS prefix */
-static uint8_t *kernel_image, *pad_image;
+/* The GS stream's piece, and the two units' own state. All static: a static's guest address is one
+   the host services can be given, on every host. */
+static uint8_t gs_chunk[SS_CHUNK];
+static uint8_t kernel_image[KERNEL_IMAGE_MAX], pad_image[PAD_IMAGE_MAX];
 static uint32_t kernel_bytes, pad_bytes;
-
-static int images(void)
-{
-    if (kernel_image) return 1;
-    kernel_bytes = kernel_state_size();
-    pad_bytes = pad_state_size();
-    gs_image = malloc(offsetof(Gs, sync));
-    kernel_image = malloc(kernel_bytes ? kernel_bytes : 1);
-    pad_image = malloc(pad_bytes ? pad_bytes : 1);
-    if (!gs_image || !kernel_image || !pad_image) {
-        free(gs_image), free(kernel_image), free(pad_image);
-        gs_image = NULL, kernel_image = NULL, pad_image = NULL;
-        hle_log("savestate: no memory for the state's images (%.1f MB) — savestates are off\n",
-                (double)(offsetof(Gs, sync) + kernel_bytes + pad_bytes) / (1024.0 * 1024.0));
-        return 0;
-    }
-    /* Touched now, so that memory this unit cannot have fails here with a line, not later inside a
-       copy of the machine. */
-    memset(gs_image, 0, offsetof(Gs, sync));
-    memset(kernel_image, 0, kernel_bytes);
-    memset(pad_image, 0, pad_bytes);
-    hle_log("savestate: images %.1f MB (gs %.1f, kernel %.1f, pad %.1f)\n",
-            (double)(offsetof(Gs, sync) + kernel_bytes + pad_bytes) / (1024.0 * 1024.0),
-            (double)offsetof(Gs, sync) / (1024.0 * 1024.0), (double)kernel_bytes / (1024.0 * 1024.0),
-            (double)pad_bytes / (1024.0 * 1024.0));
-    return 1;
-}
 
 static char save_path[512], load_path[512];
 static char quick_path[512];
@@ -78,18 +61,10 @@ static int save_pending, load_pending, key_last;
 static unsigned long save_field;
 static int said_lines, said_blocks;
 
-/* The blocks of the first save and the first load, in dhd.log: if one of them is where a run dies,
-   the last line says which (the later saves stay quiet). */
-static void log_block(const char *what, const char *name, uint32_t bytes)
-{
-    if (said_blocks) return;
-    hle_log("savestate: %s %-7s %u bytes\n", what, name, (unsigned)bytes);
-}
-
 static int session_live(void)
 {
     /* A savestate's keys are the TAS session's keys: a movie, a control file, or the keys asked for,
-       so an ordinary player's F5 and F8 stay the game's. */
+       so an ordinary player's Ctrl+5 and Ctrl+8 stay the game's. */
     static const char *const names[] = {"DHD_TAS_PLAY", "DHD_TAS_RECORD", "DHD_TAS_STEP",
                                         "DHD_TAS_KEYS", "DHD_TAS_PAUSE", "DHD_SAVE_STATE",
                                         "DHD_LOAD_STATE"};
@@ -101,6 +76,19 @@ static int session_live(void)
 }
 
 int savestate_enabled(void) { return save_path[0] || load_path[0] || session_live(); }
+
+static int sizes(void)
+{
+    kernel_bytes = kernel_state_size();
+    pad_bytes = pad_state_size();
+    if (kernel_bytes > sizeof kernel_image || pad_bytes > sizeof pad_image) {
+        hle_log("savestate: a unit's state is larger than this one's image (kernel %u of %u, pad %u of "
+                "%u) — savestates are off\n", (unsigned)kernel_bytes, (unsigned)sizeof kernel_image,
+                (unsigned)pad_bytes, (unsigned)sizeof pad_image);
+        return 0;
+    }
+    return 1;
+}
 
 void savestate_init(void)
 {
@@ -118,15 +106,17 @@ void savestate_init(void)
     if (load_path[0]) hle_log("savestate: load '%s' at the first field (DHD_LOAD_STATE; a file from a "
                               "fresh boot cannot bring the code's live frames back — finding 286)\n", load_path);
     if (!save_path[0] && !load_path[0] && session_live())
-        hle_log("savestate: F5 saves to '%s' and F8 loads it back (a TAS session's keys)\n", quick_path);
+        hle_log("savestate: Ctrl+5 saves to '%s' and Ctrl+8 loads it back (a TAS session's keys)\n",
+                quick_path);
 }
 
-static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes)
+static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes, int chunked)
 {
     if (*n >= SS_MAX_BLOCKS) return;
     snprintf(b[*n].name, SS_NAME, "%s", name);
     b[*n].data = data;
     b[*n].bytes = bytes;
+    b[*n].chunked = chunked;
     (*n)++;
 }
 
@@ -134,25 +124,21 @@ static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes
 static int collect(SsBlock *b)
 {
     int n = 0;
-    if (!images()) return 0;
+    if (!sizes()) return 0;
     kernel_state_save(kernel_image);
     pad_state_save(pad_image);
     /* Every packet the field fed has reached the GS state (state_trace.c waits the same way before
        its own snapshot). */
     host_service_graphics_wait();
-    host_service_gs_snapshot(GADDR(gs_image), (uint32_t)offsetof(Gs, sync));
-    add(b, &n, "ram", GUEST(0), 0x02000000u);
-    /* Not the 64 EE thread stacks at 0x06000000 (16 MiB): the host commits those page by page, per
-       slot, and copying the whole area reads pages that were never committed — which ends the
-       process with the guest's own fault, as the first save did on Windows. They are the same class
-       of state as the live frames (finding 286) and are not in a savestate yet. */
-    add(b, &n, "scratch", GUEST(0x70000000), 0x4000u);
-    add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE);
-    add(b, &n, "vu", GUEST(0x11000000), 0x10000u);
-    add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2);
-    add(b, &n, "gs", gs_image, (uint32_t)offsetof(Gs, sync));
-    add(b, &n, "kernel", kernel_image, kernel_bytes);
-    add(b, &n, "pad", pad_image, pad_bytes);
+    add(b, &n, "ram", GUEST(0), 0x02000000u, 0);
+    /* Not the 64 EE thread stacks at 0x06000000: see the note at the top of this file. */
+    add(b, &n, "scratch", GUEST(0x70000000), 0x4000u, 0);
+    add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE, 0);
+    add(b, &n, "vu", GUEST(0x11000000), 0x10000u, 0);
+    add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2, 0);
+    add(b, &n, "gs", gs_chunk, (uint32_t)offsetof(Gs, sync), 1);   /* the piece buffer, streamed */
+    add(b, &n, "kernel", kernel_image, kernel_bytes, 0);
+    add(b, &n, "pad", pad_image, pad_bytes, 0);
     return n;
 }
 
@@ -161,6 +147,39 @@ static double megabytes(const SsBlock *b, int count)
     unsigned long long total = 0;
     for (int i = 0; i < count; i++) total += b[i].bytes;
     return (double)total / (1024.0 * 1024.0);
+}
+
+/* The blocks of the first save and the first load, in dhd.log: if one of them is where a run dies,
+   the last line says which (the later ones stay quiet). */
+static void log_block(const char *what, const char *name, uint32_t bytes)
+{
+    if (said_blocks) return;
+    hle_log("savestate: %s %-7s %u bytes\n", what, name, (unsigned)bytes);
+}
+
+/* One block's bytes, either straight from its memory or the GS prefix a piece at a time. */
+static int put(FILE *f, const SsBlock *b)
+{
+    log_block("write", b->name, b->bytes);
+    if (!b->chunked) return fwrite(b->data, 1, b->bytes, f) == b->bytes;
+    for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
+        uint32_t n = b->bytes - at < SS_CHUNK ? b->bytes - at : SS_CHUNK;
+        host_service_gs_image(GADDR(gs_chunk), at, n);
+        if (fwrite(gs_chunk, 1, n, f) != n) return 0;
+    }
+    return 1;
+}
+
+static int get(FILE *f, const SsBlock *b)
+{
+    log_block("read", b->name, b->bytes);
+    if (!b->chunked) return fread(b->data, 1, b->bytes, f) == b->bytes;
+    for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
+        uint32_t n = b->bytes - at < SS_CHUNK ? b->bytes - at : SS_CHUNK;
+        if (fread(gs_chunk, 1, n, f) != n) return 0;
+        host_service_gs_image_write(GADDR(gs_chunk), at, n);
+    }
+    return 1;
 }
 
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field)
@@ -177,8 +196,8 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
     h.field = field;
     h.blocks = (uint32_t)count;
     for (int i = 0; i < count; i++) h.total += blocks[i].bytes;
-    /* The table of contents, then the bytes: the reader checks every name and size before it writes
-       one of them (a file that is not this state must leave the machine whole). */
+    /* The table of contents, then the bytes: the reader checks every name and size, and the file's
+       length, before it writes one of them. */
     int ok = fwrite(&h, sizeof h, 1, f) == 1;
     for (int i = 0; i < count && ok; i++) {
         char name[SS_NAME] = {0};
@@ -186,10 +205,7 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
         memcpy(name, blocks[i].name, sizeof name);
         ok = fwrite(name, sizeof name, 1, f) == 1 && fwrite(&bytes, sizeof bytes, 1, f) == 1;
     }
-    for (int i = 0; i < count && ok; i++) {
-        log_block("write", blocks[i].name, blocks[i].bytes);
-        ok = fwrite(blocks[i].data, 1, blocks[i].bytes, f) == blocks[i].bytes;
-    }
+    for (int i = 0; i < count && ok; i++) ok = put(f, &blocks[i]);
     if (fclose(f) != 0) ok = 0;
     if (!ok) {
         hle_log("savestate: '%s' was not written whole\n", path);
@@ -211,9 +227,9 @@ int savestate_save(const char *path)
     return 1;
 }
 
-/* Everything is checked before anything is written: the header, the block count, then each block's
-   name and size against the list collect() would make. Only then are the bytes read into place, so a
-   file that is not this state leaves it whole. */
+/* Everything is checked before anything is written: the header, the block count, each block's name
+   and size, and the file's length. Only then are the bytes read into place, so a file that is not
+   this state leaves the machine whole. */
 int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint32_t *field)
 {
     SsHeader h;
@@ -229,8 +245,6 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
                 path, count);
         return 0;
     }
-    /* Pass 1: the table of contents against the list, and nothing else — a file that is not this
-       state must leave the machine as it was, so no block is written until every one has matched. */
     for (int i = 0; i < count; i++) {
         char name[SS_NAME];
         uint32_t bytes = 0;
@@ -242,7 +256,6 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
             return 0;
         }
     }
-    /* The file's own length: a truncated file is refused here, still without having written a byte. */
     long data_start = (long)sizeof h + (long)count * (long)(SS_NAME + sizeof(uint32_t));
     long want = data_start;
     for (int i = 0; i < count; i++) want += (long)blocks[i].bytes;
@@ -252,15 +265,13 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
         hle_log("savestate: '%s' is %ld bytes, this state is %ld: refused whole\n", path, got, want);
         return 0;
     }
-    /* Pass 2: the bytes, from where they start. */
     if (fseek(f, data_start, SEEK_SET) != 0) {
         fclose(f);
         hle_log("savestate: '%s' cannot be read from its first block\n", path);
         return 0;
     }
     for (int i = 0; i < count; i++) {
-        log_block("read", blocks[i].name, blocks[i].bytes);
-        if (fread(blocks[i].data, 1, blocks[i].bytes, f) != blocks[i].bytes) {
+        if (!get(f, &blocks[i])) {
             fclose(f);
             hle_log("savestate: '%s' ended inside block %d ('%s')\n", path, i, blocks[i].name);
             return 0;
@@ -278,9 +289,9 @@ int savestate_load(const char *path)
     uint32_t field = 0;
     if (!n) return 0;
     if (!savestate_read_file(path, b, n, &field)) return 0;
-    /* The blocks are in place. What the units hold outside guest memory goes back, then the clock is
-       rebased: the time between the save and the load is no game time. */
-    host_service_gs_restore(GADDR(gs_image), (uint32_t)offsetof(Gs, sync));
+    /* The GS is back already (its block is written as it is read). What the units hold outside guest
+       memory goes back now, then the clock is rebased: the time between the save and the load is no
+       game time. */
     kernel_state_load(kernel_image);
     pad_state_load(pad_image);
     port_clock_rebase();
@@ -293,7 +304,7 @@ int savestate_load(const char *path)
 
 void savestate_field(void)
 {
-    int f5 = 0, f8 = 0;
+    int ctrl, k5 = 0, k8 = 0;
     if (!savestate_enabled()) return;
     if (load_pending) {
         load_pending = 0;
@@ -304,17 +315,15 @@ void savestate_field(void)
         savestate_save(save_path);
     }
     if (!session_live()) return;
-    /* The keys: F5 and F8, on their edges, from the host's keyboard (the same two calls the TAS's
-       own keys come through, so no second import). */
-    if (host_service_keyboard_focused()) {
-        f5 = host_service_keyboard_key(0x74);
-        f8 = host_service_keyboard_key(0x77);
+    /* The keys: Ctrl+5 saves and Ctrl+8 loads, on their edges, from the host's keyboard (the same two
+       calls the TAS's own keys come through). Ctrl, so a plain 5 or 8 stays the game's. */
+    ctrl = host_service_keyboard_focused() && host_service_keyboard_key(VKEY_CONTROL);
+    if (ctrl) {
+        k5 = host_service_keyboard_key(0x35);
+        k8 = host_service_keyboard_key(0x38);
     }
-    int edge5 = f5 && !(key_last & 1), edge8 = f8 && !(key_last & 2);
-    key_last = (f5 ? 1 : 0) | (f8 ? 2 : 0);
-    if (edge5) {
-        snprintf(quick_path, sizeof quick_path, "dhd-quicksave.state");
-        savestate_save(quick_path);
-    }
+    int edge5 = k5 && !(key_last & 1), edge8 = k8 && !(key_last & 2);
+    key_last = (k5 ? 1 : 0) | (k8 ? 2 : 0);
+    if (edge5) savestate_save(quick_path);
     if (edge8) savestate_load(quick_path);
 }

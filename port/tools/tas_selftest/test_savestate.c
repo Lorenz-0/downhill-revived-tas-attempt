@@ -36,6 +36,10 @@ int host_service_keyboard_focused(void) { return 0; }
 int host_service_keyboard_key(unsigned vk) { (void)vk; return 0; }
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void host_service_graphics_wait(void) {}
+void host_service_gs_image(uint32_t address, uint32_t offset, uint32_t bytes)
+{ (void)address; (void)offset; (void)bytes; }
+void host_service_gs_image_write(uint32_t address, uint32_t offset, uint32_t bytes)
+{ (void)address; (void)offset; (void)bytes; }
 void host_service_gs_restore(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void port_clock_rebase(void) {}
 uint32_t kernel_state_size(void) { return 8; }
@@ -58,8 +62,8 @@ int main(void)
     const char *path = "savestate-selftest.state";
     const char *bad = "savestate-selftest-bad.state";
     uint8_t a[64], b[32], c[16], a2[64], b2[32], c2[16];
-    SsBlock out[3] = {{"ram-ish", a, sizeof a}, {"gs-ish", b, sizeof b}, {"pad-ish", c, sizeof c}};
-    SsBlock in[3] = {{"ram-ish", a2, sizeof a2}, {"gs-ish", b2, sizeof b2}, {"pad-ish", c2, sizeof c2}};
+    SsBlock out[3] = {{"ram-ish", a, sizeof a, 0}, {"gs-ish", b, sizeof b, 0}, {"pad-ish", c, sizeof c, 0}};
+    SsBlock in[3] = {{"ram-ish", a2, sizeof a2, 0}, {"gs-ish", b2, sizeof b2, 0}, {"pad-ish", c2, sizeof c2, 0}};
     uint32_t field = 0;
     int wrote, read, equal, field_ok;
     int refused_size, refused_name, refused_short, refused_magic;
@@ -79,11 +83,11 @@ int main(void)
        reader only after every name and size matched) */
     memset(a2, 0, sizeof a2);
     {
-        SsBlock wrong[3] = {{"ram-ish", a2, sizeof a2 - 1}, {"gs-ish", b2, sizeof b2}, {"pad-ish", c2, sizeof c2}};
+        SsBlock wrong[3] = {{"ram-ish", a2, sizeof a2 - 1, 0}, {"gs-ish", b2, sizeof b2, 0}, {"pad-ish", c2, sizeof c2, 0}};
         refused_size = savestate_read_file(path, wrong, 3, NULL) == 0 && a2[0] == 0;
     }
     {
-        SsBlock wrong[3] = {{"ram-ish", a2, sizeof a2}, {"gs-ISH", b2, sizeof b2}, {"pad-ish", c2, sizeof c2}};
+        SsBlock wrong[3] = {{"ram-ish", a2, sizeof a2, 0}, {"gs-ISH", b2, sizeof b2, 0}, {"pad-ish", c2, sizeof c2, 0}};
         refused_name = savestate_read_file(path, wrong, 3, NULL) == 0 && a2[0] == 0;
     }
     /* a file that ends inside a block: refused */

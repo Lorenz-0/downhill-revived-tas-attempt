@@ -6,8 +6,8 @@
    threads' stacks, the HLE's own bookkeeping); what is knowingly missing is named in
    savestate_field()'s first log line, and finding 286 says why.
 
-   Keys: F5 saves, F8 loads, live in a TAS session (a movie, a control file, DHD_TAS_KEYS, or a
-   DHD_SAVESTATE_* of its own). Env: DHD_SAVE_STATE=<file> saves at DHD_SAVE_FIELD=<n>, or at the
+   Keys: Ctrl+5 saves, Ctrl+8 loads, live in a TAS session (a movie, a control file, DHD_TAS_KEYS, or
+   a DHD_SAVE_STATE/DHD_LOAD_STATE of its own). Env: DHD_SAVE_STATE=<file> saves at DHD_SAVE_FIELD=<n>, or at the
    first boundary without one; DHD_LOAD_STATE=<file> loads at the first boundary. */
 #ifndef DHD_SAVESTATE_H
 #define DHD_SAVESTATE_H
@@ -28,8 +28,9 @@ int savestate_load(const char *path);
 #define SS_NAME 24
 typedef struct {
     char name[SS_NAME];
-    void *data;
+    void *data;        /* the bytes, when chunked is 0; the piece buffer when it is 1 */
     uint32_t bytes;
+    int chunked;       /* 1: the GS prefix, copied a piece at a time through host_api.h */
 } SsBlock;
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field);
 int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint32_t *field);

@@ -185,6 +185,24 @@ the fields counted) and padman's. **≈36.3 MB**; the whole file is checked — 
 count, every block's name and size, and the file's own length — **before one byte of the machine is
 written**, so a file that is not this state is refused whole.
 
+**Two saves on Windows ended the process. The second one moved the whole unit onto ground it can
+stand on:**
+
+- **The EE thread stacks** (16 MiB at 0x06000000) were in the block list, copied whole. The host
+  commits those slots page by page, per thread, with a guard page each
+  (`host64_memory_commit_stack`), so most of that area had never been committed and reading it is the
+  guest's own fault — the process ends, no dialog, exactly as a wild access does. They are out.
+- **The GS image** was a 4 MiB buffer. As a static it does not fit the module's data (the wasm link
+  refuses it); as the heap's it means growing the module's memory into a 4 MiB run, which is not
+  memory this unit can count on being committed — and that save died too. The GS is **streamed** now:
+  one 64 KiB static piece at a time, straight into (or out of) the file, through two new piece
+  services (`host_service_gs_image`, `host_service_gs_image_write`, the offset forms of the snapshot
+  and restore). Nothing in this unit is allocated and nothing is bigger than 64 KiB plus the kernel's
+  and padman's own images (≈205 KiB and 4 KiB, static).
+
+The keys are **Ctrl+5** (save) and **Ctrl+8** (load) rather than F5/F8, so a plain press of a key the
+game may want stays the game's, and the edge is only taken with Ctrl held.
+
 **The first save on Windows ended the process, and why is worth keeping:** the block list included
 the 64 EE thread stacks, 16 MiB at 0x06000000, copied whole. The host commits those slots page by
 page, per thread, with a guard page each (`fiber.c`, `host64_memory_commit_stack`), so most of that
