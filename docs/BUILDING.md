@@ -149,6 +149,9 @@ Measured per platform and step in finding 151. What keeps a rebuild short:
   code as before); it writes `split.txt` beside the game (`one`, `wasm2c` or `chunks`; an APK
   carries it as `assets/dhd-split.txt`), and `package_release.py` and the APK's release check
   refuse `chunks` (`package_release.py` passes `--release` itself for Windows and Android).
+- **`--jobs` (and `build.py -j`) are the machine's size**: the defaults are 8; a 16-core/24-thread
+  laptop (an i7-14650HX) builds the C step best at 16. Past the physical cores the compiles wait on
+  memory more than on a free thread, and on a thin laptop 24 at once throttles.
 - **A development loop passes `--dev`** (`build.py --dev`), which is `-- --num-outputs 8`: the module
   in chunks, compiled in parallel, and after a change of one game file only the chunks that changed
   recompile — finding 151 measured a one-line change at 319 s of CPU (332 s wall) as one unit and
