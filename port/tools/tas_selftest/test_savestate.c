@@ -42,6 +42,9 @@ void host_service_gs_image_write(uint32_t address, uint32_t offset, uint32_t byt
 { (void)address; (void)offset; (void)bytes; }
 void host_service_gs_restore(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void port_clock_rebase(void) {}
+int pads_online(void) { return 0; }
+int tas_playing(void) { return 0; }
+int tas_recording(void) { return 0; }
 uint32_t kernel_state_size(void) { return 8; }
 void kernel_state_save(void *dst) { memset(dst, 0x11, 8); }
 void kernel_state_load(const void *src) { (void)src; }

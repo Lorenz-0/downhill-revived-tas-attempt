@@ -6,8 +6,8 @@
    threads' stacks, the HLE's own bookkeeping); what is knowingly missing is named in
    savestate_field()'s first log line, and finding 286 says why.
 
-   Keys: Ctrl+5 saves, Ctrl+8 loads, live in a TAS session (a movie, a control file, DHD_TAS_KEYS, or
-   a DHD_SAVE_STATE/DHD_LOAD_STATE of its own). Env: DHD_SAVE_STATE=<file> saves at DHD_SAVE_FIELD=<n>, or at the
+   Keys: Ctrl+5 saves, Ctrl+8 loads, in any session; both are off while an online race is (the TAS's
+   own rule: it is offline only). Env: DHD_SAVE_STATE=<file> saves at DHD_SAVE_FIELD=<n>, or at the
    first boundary without one; DHD_LOAD_STATE=<file> loads at the first boundary. */
 #ifndef DHD_SAVESTATE_H
 #define DHD_SAVESTATE_H
@@ -34,7 +34,6 @@ typedef struct {
 } SsBlock;
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field);
 int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint32_t *field);
-int savestate_enabled(void);
 
 /* The HLE's own state, each unit's own: implemented where it lives (kernel.c, pad.c), sized at
    run time so a savestate unit never has to know another unit's structs. */

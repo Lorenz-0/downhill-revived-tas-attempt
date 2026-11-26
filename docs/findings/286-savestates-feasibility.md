@@ -203,6 +203,17 @@ stand on:**
 The keys are **Ctrl+5** (save) and **Ctrl+8** (load) rather than F5/F8, so a plain press of a key the
 game may want stays the game's, and the edge is only taken with Ctrl held.
 
+**And the third "the game dies" report was not a die at all.** Its log ended
+`game: the front end runs`, `exit game: chosen in the main menu`, `end: closing (code 0)` and the
+whole session's `perf:` line after it — the port's own graceful exit, with no savestate line
+anywhere. The keys were behind the TAS session's gate (a movie, a control file, `DHD_TAS_KEYS`, or a
+`DHD_SAVE_STATE`/`DHD_LOAD_STATE`), no session was live, so Ctrl+5 was never read; what the log
+recorded was the player leaving the menu afterwards. The gate is gone: the keys save and load in any
+session, and are refused only while an online race is (the TAS's own rule). `savestate_init` also
+says the keys' names on the first line of every session now, so a report's log says which build made
+it and whether this feature is in it — the absence of that line, not a crash, is what a stale build
+looks like.
+
 **The first save on Windows ended the process, and why is worth keeping:** the block list included
 the 64 EE thread stacks, 16 MiB at 0x06000000, copied whole. The host commits those slots page by
 page, per thread, with a guard page each (`fiber.c`, `host64_memory_commit_stack`), so most of that

@@ -20,13 +20,18 @@
 
    A savestate belongs to the session and the build that wrote it: the code's live frames are host
    memory that a fresh boot has not got (finding 286's one obstacle), so loading is supported within
-   the session that saved. */
+   the session that saved.
+
+   The keys save and load in any session, movie or not (a player practising a track has no movie
+   either), and are off while an online race is: that is the TAS's rule and this is the TAS's state.
+   The first log line says the keys are there, so a report's log says whether the build has them. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "savestate.h"
 #include "hle.h"
+#include "tas.h"
 #include "fps.h"
 #include "ps2asm.h"
 #include "../gs/gs.h"
@@ -61,21 +66,19 @@ static int save_pending, load_pending, key_last;
 static unsigned long save_field;
 static int said_lines, said_blocks;
 
-static int session_live(void)
+/* An online race owns the simulation: the TAS turns itself off there, and so does this (finding 286,
+   as mission 7's scope says). Said once. */
+static int online_said;
+static int online_blocks(void)
 {
-    /* A savestate's keys are the TAS session's keys: a movie, a control file, or the keys asked for,
-       so an ordinary player's Ctrl+5 and Ctrl+8 stay the game's. */
-    static const char *const names[] = {"DHD_TAS_PLAY", "DHD_TAS_RECORD", "DHD_TAS_STEP",
-                                        "DHD_TAS_KEYS", "DHD_TAS_PAUSE", "DHD_SAVE_STATE",
-                                        "DHD_LOAD_STATE"};
-    for (unsigned i = 0; i < sizeof names / sizeof *names; i++) {
-        const char *v = host_getenv(names[i]);
-        if (v && *v && strcmp(v, "0") != 0) return 1;
+    if (!pads_online()) return 0;
+    if (!online_said) {
+        online_said = 1;
+        hle_log("savestate: Ctrl+5 and Ctrl+8 off: an online session (a savestate is the TAS's, and an "
+                "online race is not\n");
     }
-    return 0;
+    return 1;
 }
-
-int savestate_enabled(void) { return save_path[0] || load_path[0] || session_live(); }
 
 static int sizes(void)
 {
@@ -105,9 +108,9 @@ void savestate_init(void)
                               save_field ? "its field" : "the first field");
     if (load_path[0]) hle_log("savestate: load '%s' at the first field (DHD_LOAD_STATE; a file from a "
                               "fresh boot cannot bring the code's live frames back — finding 286)\n", load_path);
-    if (!save_path[0] && !load_path[0] && session_live())
-        hle_log("savestate: Ctrl+5 saves to '%s' and Ctrl+8 loads it back (a TAS session's keys)\n",
-                quick_path);
+    /* Always said: the log then shows which build a report came from, and the keys' names. */
+    hle_log("savestate: Ctrl+5 saves to '%s' and Ctrl+8 loads it back, in any session (both are off "
+            "while an online race is; a savestate is the TAS's, finding 286)\n", quick_path);
 }
 
 static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes, int chunked)
@@ -299,13 +302,18 @@ int savestate_load(const char *path)
     hle_log("savestate: loaded '%s' at field %llu (saved at %u); the renderer's own caches are not "
             "state: a picture may be stale until the game redraws\n", path,
             (unsigned long long)kernel_vsync_count, (unsigned)field);
+    /* A movie's own position (its field count, its file offset) is not in a savestate: the machine
+       went back, the movie did not, so the two are out of step from here. */
+    if (tas_playing() || tas_recording())
+        hle_log("savestate: a movie is %s, and its position is not in a savestate: the machine is back "
+                "at field %u and the movie is not (stop the movie before loading, or the run will not "
+                "replay)\n", tas_playing() ? "playing" : "recording", (unsigned)field);
     return 1;
 }
 
 void savestate_field(void)
 {
     int ctrl, k5 = 0, k8 = 0;
-    if (!savestate_enabled()) return;
     if (load_pending) {
         load_pending = 0;
         savestate_load(load_path);
@@ -314,7 +322,7 @@ void savestate_field(void)
         save_pending = 0;
         savestate_save(save_path);
     }
-    if (!session_live()) return;
+    if (online_blocks()) return;
     /* The keys: Ctrl+5 saves and Ctrl+8 loads, on their edges, from the host's keyboard (the same two
        calls the TAS's own keys come through). Ctrl, so a plain 5 or 8 stays the game's. */
     ctrl = host_service_keyboard_focused() && host_service_keyboard_key(VKEY_CONTROL);
