@@ -243,6 +243,14 @@ naming with `port/tools/host64_rva.py <map> <log>`, which says whether the hang 
 or in a wait. The TAS keys, separately, were never broken: they are the game's unless a session
 claims them (mission 7's rule), and the first field now says so — `DHD_TAS_KEYS=1` claims them.
 
+**The breadcrumb a report brought was one line:** `save: block ram 33554432 bytes` and nothing else,
+so the save stops inside the first block. Its build was older than the megabyte pieces, so it cannot
+say whether the write was stuck or slow. The next build answers that three ways: every line carries
+the wall-clock seconds it was written (a slow write and a stuck one look alike otherwise, and the gap
+between two lines is the call between them); the write is a megabyte a piece with a line each;
+and `DHD_SAVE_SMALL=1` leaves RAM out, which is the one test that separates "the big write hangs"
+from "something else does" — the state it writes cannot be loaded back, and says so.
+
 **What the first two logs a report came with actually contained** (worth keeping, because between
 them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
 closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line

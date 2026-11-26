@@ -38,6 +38,7 @@ void host_service_gs_snapshot(uint32_t address, uint32_t bytes) { (void)address;
 void host_service_graphics_wait(void) {}
 void host_service_gs_restore(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void port_clock_rebase(void) {}
+double host_wall_seconds(void) { return 0; }
 int pads_online(void) { return 0; }
 int tas_playing(void) { return 0; }
 int tas_recording(void) { return 0; }

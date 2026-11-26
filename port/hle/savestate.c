@@ -49,11 +49,17 @@ extern uint64_t kernel_vsync_count;   /* kernel.c: the field a savestate belongs
    Not in the game's log except first-time block lines: at 165 fields/s a save's eight lines per
    press belong in this file, not in dhd.log. */
 #define SS_TRACE "savestate-trace.txt"
+static double crumb_start;   /* the boot's clock, so every line says when it was written */
 static void breadcrumb(const char *fmt, ...)
 {
     va_list ap;
     FILE *f = fopen(SS_TRACE, "a");
     if (!f) return;
+    double now = host_wall_seconds();
+    if (crumb_start <= 0) crumb_start = now;
+    /* The time on every line: a write that is slow and a write that is stuck look the same
+       otherwise, and a gap between two lines is the call between them. */
+    fprintf(f, "%8.2f  ", now - crumb_start);
     va_start(ap, fmt);
     vfprintf(f, fmt, ap);
     va_end(ap);
@@ -152,6 +158,10 @@ static int collect(SsBlock *b)
 {
     int n = 0;
     if (!sizes()) return 0;
+    /* DHD_SAVE_SMALL=1 leaves the 32 MiB of RAM out: a state that cannot be loaded back, and the
+       one test that says whether a save hangs on the big write or on something else (finding 286). */
+    const char *small = host_getenv("DHD_SAVE_SMALL");
+    int no_ram = small && *small && strcmp(small, "0") != 0;
     kernel_state_save(kernel_image);
     pad_state_save(pad_image);
     /* PS2 address 0 is at PS2_RAM_BASE (0x08000000) inside the module, not at 0: the module's own
@@ -159,7 +169,7 @@ static int collect(SsBlock *b)
        reads the stack and then the guard page, and the runtime ends the process with an
        out-of-bounds trap. This unit did exactly that on Windows (finding 286): the log's last line
        was "savestate: write ram 33554432 bytes" and then "host64 trap: Out-of-bounds access". */
-    add(b, &n, "ram", (void *)(uintptr_t)PS2_RAM_BASE, 0x02000000u);
+    if (!no_ram) add(b, &n, "ram", (void *)(uintptr_t)PS2_RAM_BASE, 0x02000000u);
     /* Not the 64 EE thread stacks at 0x06000000: see the note at the top of this file. */
     add(b, &n, "scratch", GUEST(PS2_SCRATCHPAD), 0x4000u);
     add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE);
@@ -199,6 +209,7 @@ static int put(FILE *f, const SsBlock *b)
         if (b->bytes > SS_PIECE) breadcrumb("save: %s %u of %u MiB", b->name, at >> 20, b->bytes >> 20);
         if (fwrite((uint8_t *)b->data + at, 1, n, f) != n) return 0;
     }
+    breadcrumb("save: %s done", b->name);
     return 1;
 }
 
@@ -211,6 +222,7 @@ static int get(FILE *f, const SsBlock *b)
         if (b->bytes > SS_PIECE) breadcrumb("load: %s %u of %u MiB", b->name, at >> 20, b->bytes >> 20);
         if (fread((uint8_t *)b->data + at, 1, n, f) != n) return 0;
     }
+    breadcrumb("load: %s done", b->name);
     return 1;
 }
 
@@ -253,6 +265,11 @@ int savestate_save(const char *path)
 {
     SsBlock b[SS_MAX_BLOCKS];
     breadcrumb("save: asked at field %llu (%s)", (unsigned long long)kernel_vsync_count, path);
+    {
+        const char *small = host_getenv("DHD_SAVE_SMALL");
+        if (small && *small && strcmp(small, "0") != 0)
+            breadcrumb("save: DHD_SAVE_SMALL: no RAM in this state (a test, not a savestate)");
+    }
     int n = collect(b);
     if (!n) {
         breadcrumb("save: refused, nothing collected");
