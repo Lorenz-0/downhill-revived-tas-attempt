@@ -340,15 +340,22 @@ enum { TAS_KEY_PAUSE = 3 };   /* the other three are the ways to release a field
 static const unsigned tas_key_vk[TAS_KEYS] = {'C', 0x20, '1', 'P'};
 static uint8_t tas_key_last[TAS_KEYS];   /* the level each key had when it was last read */
 
-/* The keys belong to the TAS while a session is live (keyboard.c's keyboard_pad asks, so C is not
-   the kick and Space is not the pedal then). Outside one, and with DHD_TAS_KEYS=0, they are the
-   game's keys as before: a player who is not running a TAS keeps the pedal on Space. */
-int tas_key_claimed(unsigned vk)
+/* The keys belong to the TAS while a session is live (keyboard.c's keyboard_pad drops a claimed
+   key, so C is not the kick and Space is not the pedal then). Outside one, and with
+   DHD_TAS_KEYS=0, they are the game's keys as before: a player who is not running a TAS keeps the
+   pedal on Space. The claim is published into the HLE window for the game's keyboard to read
+   (tas.h tas_claim_words): keyboard.c is compiled for the host as well as for the module, and the
+   host's copy is the one that builds player 1's pad. Called where the session's claim starts or
+   ends, not once a field. */
+static void tas_keys_publish(void)
 {
-    if (!initialized || !keys_on) return 0;
-    for (int i = 0; i < TAS_KEYS; i++)
-        if (tas_key_vk[i] == vk) return 1;
-    return 0;
+    volatile uint8_t *words = tas_claim_words();
+    for (unsigned i = 0; i < PS2_TAS_KEYS_SIZE; i++) words[i] = 0;
+    if (!keys_on) return;
+    for (int i = 0; i < TAS_KEYS; i++) {
+        unsigned vk = (unsigned)tas_key_vk[i];
+        words[vk >> 3] = (uint8_t)(words[vk >> 3] | (1u << (vk & 7)));
+    }
 }
 
 static int can_pause_here(void);
@@ -412,6 +419,7 @@ void tas_init(void)
     keys_on = !keys_off && (keys_asked || play_path || record_path || step_path || want_pause);
     if (keys_on)
         tas_log("keys: C, Space or 1 steps a field, P pauses and releases it (DHD_TAS_KEYS=0 turns them off)");
+    tas_keys_publish();
     if (play_path) playing = load_movie(play_path);
     if (record_path) record_open(record_path);
     /* A movie is a run: repeatable only on the game's fixed step. Normal play, a frame rate other
@@ -467,6 +475,8 @@ static void tas_quit(void)
     tas_log("quit: the game ends, as EXIT GAME's Yes does");
     paused = 0;
     playing = 0;
+    keys_on = 0;              /* the keys are the game's again */
+    tas_keys_publish();
     if (recording) record_close(NULL);
     host_service_gs_window_close();
 }
@@ -490,6 +500,8 @@ static int online_blocks_tas(void)
             step_granted = 0;
             tas_log("online session: frame advance off (TAS is offline only)");
         }
+        keys_on = 0;          /* the keys are the game's again */
+        tas_keys_publish();
     }
     return 1;
 }

@@ -3,21 +3,24 @@
    (finding 285). Built and run by port/tools/test_runtime.py. */
 #include "hle.h"
 #include "controls_table.h"
+#include "tas.h"                  /* the claim's words: the TAS publishes them (finding 285) */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
 static uint8_t down[256];
 
-/* The TAS's keys (tas.h tas_key_claimed), as the test sets them: a session claims C, Space, 1 and
-   P, and nothing else, and they are then no part of the game's pad (keyboard.c keyboard_pad). */
-static unsigned claimed[8];
-static int claimed_count;
-int tas_key_claimed(unsigned vk)
+/* The TAS's keys (tas.h): a session claims C, Space, 1 and P, and nothing else, and they are then
+   no part of the game's pad (keyboard.c keyboard_pad). The claim is published state, so the test
+   writes the same words tas.c writes, in the HLE window this build places inside its guest
+   (test_runtime.py passes PS2_HLE_WINDOW=0x00F00000 of a 16 MiB guest; the game's window is at
+   0x70004000 and the host's own keyboard.c reads the claim from there). */
+static void claim(unsigned vk, int on)
 {
-    for (int i = 0; i < claimed_count; i++)
-        if (claimed[i] == vk) return 1;
-    return 0;
+    volatile uint8_t *words = tas_claim_words();
+    if (vk >= 256) return;
+    if (on) words[vk >> 3] = (uint8_t)(words[vk >> 3] | (1u << (vk & 7)));
+    else    words[vk >> 3] = (uint8_t)(words[vk >> 3] & ~(1u << (vk & 7)));
 }
 static const ControlsLayout *layout;  /* NULL: the default one */
 static int input_rate=60;
@@ -237,11 +240,11 @@ int main(void)
        keys the session does not claim keep working; letting the claim go gives both back */
     memset(down, 0, sizeof down);
     down[' '] = down['C'] = down['A'] = 1;
-    claimed[0] = 'C', claimed[1] = ' ', claimed[2] = '1', claimed[3] = 'P', claimed_count = 4;
+    claim('C', 1), claim(' ', 1), claim('1', 1), claim('P', 1);
     p = pad(1, 15);
     assert((p.buttons & PAD_CROSS) == 0 && (p.buttons & PAD_CIRCLE) == 0);  /* the pedal and the kick */
     assert(p.buttons & PAD_L1);                                            /* A is L1: not claimed */
-    claimed_count = 0;
+    claim('C', 0), claim(' ', 0), claim('1', 0), claim('P', 0);
     p = pad(1, 15.1);
     assert((p.buttons & PAD_CROSS) && (p.buttons & PAD_CIRCLE) && (p.buttons & PAD_L1));
     memset(down, 0, sizeof down);

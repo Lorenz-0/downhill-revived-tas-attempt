@@ -52,12 +52,31 @@
 #define TAS_H
 
 #include "hle.h"
+#include "../include/guest.h"     /* GUEST: the claim's words are guest memory */
+#include "../runtime/memory.h"    /* PS2_TAS_KEYS */
 
 void tas_init(void);               /* once, from the first field; reads the variables above */
 int tas_playing(void);             /* 1 when a movie loaded and is being played */
 int tas_recording(void);           /* 1 when recording (the movie file is open) */
 int tas_paused(void);              /* 1 when frame advance is holding the game */
-int tas_key_claimed(unsigned vk);  /* 1: this key is the TAS's, while a TAS session is live */
+
+/* The TAS's keys, as the game's keyboard sees them. tas.c publishes a session's claim as a bitmap
+   in the HLE window (PS2_TAS_KEYS, port/runtime/memory.h) and this reads it, so the answer crosses
+   the wasm boundary as state rather than as a call into the module: keyboard.c is compiled on both
+   sides (port/tools/host64_census.py's HOST_UNITS and build_wasm.py's module units), and its host
+   copy is the one that turns a real key into player 1's pad. A host-side tas.c would be a second
+   instance with its own (never initialized) session and would answer 0 for ever. */
+static inline volatile uint8_t *tas_claim_words(void)
+{
+    return (volatile uint8_t *)GUEST(PS2_TAS_KEYS);
+}
+
+/* 1 when a TAS session holds this key: the game's layout never sees it then. */
+static inline int tas_key_claimed(unsigned vk)
+{
+    const volatile uint8_t *words = tas_claim_words();
+    return vk < 256 && ((words[vk >> 3] >> (vk & 7)) & 1u) != 0;
+}
 void tas_frame_advance_wait(void); /* start of a field: pauses, polls the control file, refuses online */
 int tas_pad(int player, HostPad *out);  /* player 0 only: fill the pad from the movie; 0 otherwise */
 void tas_capture(int player, const HostPad *out); /* player 0 only: keep the pad this field consumed */

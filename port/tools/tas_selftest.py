@@ -31,6 +31,7 @@ WORK = os.path.join(BUILD, 'run')
 INCLUDES = ['-I' + os.path.join(ROOT, 'port', 'hle'), '-I' + os.path.join(ROOT, 'port', 'include'),
             '-I' + os.path.join(ROOT, 'port', 'host')]
 CFLAGS = ['-std=gnu99', '-Wall', '-Wextra', '-Wno-unused-parameter']
+LIBS = [] if os.name == 'nt' else ['-lm']   # keyboard.c's field timing rounds with ceil()
 
 results = []          # (name, ok)   ok: True, False, or None for skipped
 
@@ -126,9 +127,12 @@ def main():
         shutil.rmtree(BUILD)
     os.makedirs(WORK)
     tas = os.path.join(ROOT, 'port', 'hle', 'tas.c')
+    # keyboard.c is linked for real: it is where a claimed key stops being the game's (the host's
+    # copy of that file builds player 1's pad, finding 285), so the claim is tested where it acts
+    keyboard = os.path.join(ROOT, 'port', 'hle', 'keyboard.c')
     harness = os.path.join(SRC, 'test_tas.c')
     plain = os.path.join(BUILD, 'test_tas')
-    cmd = [cc] + CFLAGS + INCLUDES + ['-o', plain, harness, tas]
+    cmd = [cc] + CFLAGS + INCLUDES + ['-o', plain, harness, keyboard, tas] + LIBS
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0 or not os.path.exists(built(plain)):
         say('tas selftest: cannot build the harness:\n' + p.stdout + p.stderr)
@@ -144,7 +148,7 @@ def main():
                             ('flush', 'failflush.c', '--wrap=fflush')):
         out = os.path.join(BUILD, 'test_tas_' + name)
         p = subprocess.run([cc] + CFLAGS + INCLUDES + ['-Wl,' + ld, '-o', out, harness,
-                                                      os.path.join(SRC, extra), tas],
+                                                      os.path.join(SRC, extra), keyboard, tas] + LIBS,
                            capture_output=True, text=True)
         ok = p.returncode == 0 and os.path.exists(built(out))
         fault[name] = built(out) if ok else None
@@ -234,6 +238,20 @@ def main():
           out + err)
     rc, out, err = run(plain, ['claim'], {})
     check('a run with no TAS at all claims no key', 'claimed C=0 space=0 one=0 P=0 other=0' in out, out + err)
+
+    # 4e bis. the claim where the game feels it: a key a session holds reaches no pad button
+    #     (keyboard.c's keyboard_pad), an ordinary key still does, and the keys come back
+    rc, out, err = run(plain, ['keys-pad'], {'DHD_TAS_KEYS': '1'})
+    check('the claim is published in the HLE window', 'words=01020801' in out, out + err)
+    check('a claimed key reaches no pad button', 'pad=0400 cross=0 circle=0 l1=1' in out, out + err)
+    rc, out, err = run(plain, ['keys-pad'], {'DHD_TAS_KEYS': '0'})
+    check('an unclaimed key is the game\'s own', 'pad=6400 cross=1 circle=1 l1=1' in out, out + err)
+    rc, out, err = run(plain, ['keys-pad'], {})
+    check('with no session the keys are the game\'s', 'words=00000000' in out and 'pad=6400' in out,
+          out + err)
+    rc, out, err = run(plain, ['keys-pad'], {'DHD_TAS_KEYS': '1', 'STUB_ONLINE_FIELD': '1'})
+    check('an online session gives the keys back', 'words=00000000' in out and 'pad=6400' in out,
+          out + err)
 
     rc, out, err = run(plain, ['keys'], {'DHD_TAS_KEYS': '1'})
     check('P pauses a running game', 'k-press-p fields=1 paused=1' in out, out + err)

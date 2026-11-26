@@ -14,8 +14,14 @@
 #endif
 
 #include "tas.h"
+#include "controls_table.h"
 
 uint64_t kernel_vsync_count;
+/* The HLE window the TAS publishes its claim in (port/runtime/memory.h): guest memory this test
+   maps itself onto a buffer, so GUEST(PS2_TAS_KEYS) — the address the game's keyboard reads —
+   lands in hle_window. guest.h's guest_base is the host address of guest address 0. */
+static uint8_t hle_window[PS2_HLE_WINDOW_SIZE];
+uintptr_t guest_base;
 static int online_stub;
 static int pad_calls;          /* fields whose pad came from the movie */
 static int window_closed;
@@ -26,19 +32,19 @@ static HostPad last_pad;       /* what the game consumed this field */
 int pads_online(void) { return online_stub; }
 int port_delta_clock(void) { return delta_clock; }
 void port_clock_rebase(void) { rebase_calls++; }
-/* The TAS's keys, as keyboard.c reports them (keyboard_position_down, keyboard_focused). The
-   paused loop calls host_service_gs_pump_messages once a pass, so that is where "the player" acts
-   while the game is held: a held key's release, the press that frees it. */
-static uint8_t key_down[256];
+/* The TAS's keys go through keyboard.c itself (keyboard_key: what sdl_host.c calls for a real
+   press), so the keys are read the way the game reads them, and the claim is applied where the
+   game's pad is built. The paused loop calls host_service_gs_pump_messages once a pass, so that is
+   where "the player" acts while the game is held: the press that frees it. */
 static int pump_calls;
 static int press_p_at;          /* the pump pass that presses P (0: never) */
+static void press(unsigned place, int down) { keyboard_key(place, place, down); }
 void host_service_gs_pump_messages(void)
 {
     pump_calls++;
-    if (press_p_at && pump_calls >= press_p_at) { key_down['P'] = 1; press_p_at = 0; }
+    if (press_p_at && pump_calls >= press_p_at) { press('P', 1); press_p_at = 0; }
 }
-int keyboard_focused(void) { return 1; }
-int keyboard_position_down(unsigned position) { return position < 256 && key_down[position]; }
+double host_pacing_period(void) { return 1.0 / 60; }   /* keyboard.c's field timing (host.c's) */
 void host_service_gs_window_close(void) { window_closed = 1; }
 /* The stub host's clock, with the port's contract (host_api.h, hle.h): host_wall_seconds is a
    monotonic wall clock in seconds, and host_sleep_ms really blocks. Both matter to the unit under
@@ -128,6 +134,9 @@ int main(int argc, char **argv)
     const char *sc = argc > 1 ? argv[1] : "";
     const char *step = getenv("DHD_TAS_STEP");
     int i;
+
+    guest_base = (uintptr_t)hle_window - PS2_HLE_WINDOW;   /* the guest's window is this buffer */
+    keyboard_focus(1);                                     /* the game's window has the keyboard */
 
     if (!strcmp(sc, "play3")) {
         for (i = 0; i < 3; i++) { field(); state("f"); }
@@ -234,9 +243,33 @@ int main(int argc, char **argv)
         state("after");
         return 0;
     }
+    if (!strcmp(sc, "keys-pad")) {
+        /* the claim where the game feels it: a key a TAS session owns reaches no pad button, and
+           an ordinary key still does. keyboard.c is the file that turns a layout's keys into a pad
+           (the host's copy is the one player 1's pad comes from). */
+        HostPad p;
+        uint8_t down[256];
+        const volatile uint8_t *words;
+        if (!strcmp(sc, "keys-pad") && getenv("STUB_ONLINE_FIELD")) online_stub = 1;
+        tas_init();
+        if (online_stub) field();                 /* the online gate ends the session's claim */
+        words = tas_claim_words();
+        printf("words=%02X%02X%02X%02X\n", words[4], words[6], words[8], words[10]);
+        memset(down, 0, sizeof down);
+        down['C'] = down[' '] = down['A'] = 1;    /* kick (Circle), pedal (Cross), L1 */
+        memset(&p, 0, sizeof p);
+        p.left_x = p.left_y = p.right_x = p.right_y = 128;
+        keyboard_pad(&control_defaults[CONTROL_KEYBOARD], down, 1, 1.0, &p);
+        printf("pad=%04X cross=%d circle=%d l1=%d\n", p.buttons, (p.buttons & PAD_CROSS) != 0,
+               (p.buttons & PAD_CIRCLE) != 0, (p.buttons & PAD_L1) != 0);
+        fflush(stdout);
+        return 0;
+    }
     if (!strcmp(sc, "claim")) {
         /* which keys the TAS owns this run: the game's layout never sees these (host.c) */
         tas_init();                               /* as the first field does, before any pad read */
+        printf("words=%02X%02X%02X%02X\n", tas_claim_words()[4], tas_claim_words()[6],
+               tas_claim_words()[8], tas_claim_words()[10]);
         printf("claimed C=%d space=%d one=%d P=%d other=%d\n", tas_key_claimed('C'),
                tas_key_claimed(0x20), tas_key_claimed('1'), tas_key_claimed('P'), tas_key_claimed('X'));
         return 0;
@@ -249,12 +282,12 @@ int main(int argc, char **argv)
         tas_init();
         printf("claimed C=%d space=%d one=%d P=%d other=%d\n", tas_key_claimed('C'),
                tas_key_claimed(0x20), tas_key_claimed('1'), tas_key_claimed('P'), tas_key_claimed('X'));
-        key_down['P'] = 1;                        /* running: P pauses before the next field */
+        press('P', 1);                        /* running: P pauses before the next field */
         field();
         state("press-p");
         note("k-press-p");
-        key_down['P'] = 0;
-        key_down['C'] = 1;                        /* paused: C releases exactly one field */
+        press('P', 0);
+        press('C', 1);                        /* paused: C releases exactly one field */
         field();
         state("step-c");
         note("k-step-c");
@@ -266,27 +299,27 @@ int main(int argc, char **argv)
         fflush(stdout);
         state("after-held");
         note("k-after-held");
-        key_down['C'] = 0;                        /* every key up, one field to let the levels go */
-        key_down['P'] = 0;
+        press('C', 0);                        /* every key up, one field to let the levels go */
+        press('P', 0);
         field();
         state("settled");
         note("k-settled");
-        key_down['P'] = 1;                        /* running: P pauses */
+        press('P', 1);                        /* running: P pauses */
         field();
         state("press-p-2");
         note("k-press-p-2");
-        key_down['P'] = 0;
-        key_down[0x20] = 1;                       /* paused: Space steps one field */
+        press('P', 0);
+        press(0x20, 1);                       /* paused: Space steps one field */
         field();
         state("step-space");
         note("k-step-space");
-        key_down[0x20] = 0;
-        key_down['1'] = 1;                        /* paused: 1 steps one field */
+        press(0x20, 0);
+        press('1', 1);                        /* paused: 1 steps one field */
         field();
         state("step-one");
         note("k-step-one");
-        key_down['1'] = 0;
-        key_down['P'] = 1;                        /* paused: P releases the game */
+        press('1', 0);
+        press('P', 1);                        /* paused: P releases the game */
         field();
         state("end");
         note("k-end");

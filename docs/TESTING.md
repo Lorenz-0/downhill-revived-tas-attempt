@@ -104,11 +104,13 @@ after a version change before a live check.
 `port/hle/tas.c` (finding 285) has its own tests, on the host and without the game: a stub host
 drives the unit through the order the game itself uses, one field at a time —
 `tas_frame_advance_wait()` (kernel.c: the online gate and the pause), `++kernel_vsync_count`,
-`tas_pad()` / `tas_capture()` (pads_read), `tas_vsync()` (kernel.c: the recorded line).
+`tas_pad()` / `tas_capture()` (pads_read), `tas_vsync()` (kernel.c: the recorded line). It links
+the real `keyboard.c` and drives the keys through `keyboard_key`, so the claim is tested where the
+game feels it: a claimed key reaches no pad button, an unclaimed one still does.
 
     python port/tools/tas_selftest.py
 
-89 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+94 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
 unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
 (C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,

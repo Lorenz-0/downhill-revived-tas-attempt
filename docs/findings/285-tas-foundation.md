@@ -202,7 +202,7 @@ care about, and the TAS is written against these facts:
 `port/tools/tas_selftest.py` (and `docs/TESTING.md`, "The TAS unit") builds `tas.c` into a stub
 host and drives it through the game's field order, one field at a time, with `pads_online()`,
 `host_sleep_ms()`, the game clock, the keyboard's four TAS keys and the window close under the
-test's control. 89 checks, 0
+test's control. 94 checks, 0
 failed, seconds to run, a C compiler and nothing else; two of them link a fault-injection build (`--wrap=realloc`,
 the movie chunk; `--wrap=fflush`, the third field write) and are skipped where the linker has no
 `--wrap`. They cover, in the order the review asked for them: offline playback surviving the first
@@ -239,11 +239,29 @@ and releases a held one. Read in `tas.c`, once a field and once a pass of the pa
 latches taps for the game's menus, but SDL hands a held key's OS repeats on as key-downs too, so a
 tap latched by one of those would step a field every repeat — a level that is new is the only
 honest "the player pressed this". While a TAS session is live the four keys are the TAS's:
-`keyboard.c`'s `keyboard_pad`, the one place a layout's keys become a pad, drops a key
-`tas_key_claimed()` reports, so stepping a field is not also a kick (C is Circle) and a pause is
-not a pedal (Space is Cross) — and it clears the key's own held state with it, so nothing is left
-held when the claim ends. Outside a session, and with `DHD_TAS_KEYS=0`, nothing is claimed and the
-game's keys are exactly as they were — a rule worth keeping, because those two keys are gameplay.
+`keyboard.c`'s `keyboard_pad`, the one place a layout's keys become a pad, drops a key the session
+claims, so stepping a field is not also a kick (C is Circle) and a pause is not a pedal (Space is
+Cross) — and it clears the key's own held state with it, so nothing is left held when the claim
+ends. Outside a session, and with `DHD_TAS_KEYS=0`, nothing is claimed and the game's keys are
+exactly as they were — a rule worth keeping, because those two keys are gameplay.
+
+The claim crosses the wasm boundary as state, and this is the part worth writing down, because the
+first attempt — let the host link `tas.c` too — was wrong in a way no test would have caught. The
+native build keeps its own copy of `keyboard.c` (`port/tools/host64_census.py`'s `HOST_UNITS`), and
+that copy is the one that builds player 1's pad, so it is the copy that has to know which keys are
+claimed. But only the module has a session: `tas_init()` runs from `kernel.c`'s field, `pad.c`'s
+reads and `online.c`'s gate, none of them host units, so a `tas.c` compiled into the host library
+would be a second state machine whose `initialized` is never set — it would answer "not claimed"
+for ever while the link closed cleanly, and the keys would quietly go back to kicking and pedaling
+during a TAS. The link error was the visible half of the boundary being crossed in the wrong
+direction: host code reaching into module code instead of module code publishing what the host
+needs. `tas.c` therefore publishes the claim as a bitmap in the HLE window
+(`PS2_TAS_KEYS`, 32 bytes, `port/runtime/memory.h` — scratch the game never reads, and the state
+trace does not hash) at the moments the claim starts and ends (a session's start, an online
+session's refusal, `tas_quit`), and `tas.h`'s `tas_key_claimed()` reads that bitmap: `static
+inline`, the same answer in the module and in the host's copy, with no symbol for a linker to
+argue about. `tas_selftest.py` links the real `keyboard.c` and checks the claim at the pad itself,
+so the path this design depends on is the path that is tested.
 The keys are also a release channel, which is what lets a pause exist without `DHD_TAS_STEP`; a
 pause *at startup* still asks for one explicitly (`DHD_TAS_STEP`, or `DHD_TAS_KEYS=1`), so an old
 command line that sets `DHD_TAS_PAUSE` alone keeps running instead of holding a windowless run
@@ -326,11 +344,22 @@ diff is the honest scope of the savestate work.
 
 Not merged yet, and not to be merged before the game-level checks below are made.
 
-Verified here: `tas_selftest.py` 89 checks, 0 failed (the two additions' checks: the four keys
+Verified here: `tas_selftest.py` 94 checks, 0 failed (the two additions' checks: the four keys
 claimed only in a session, P holding and releasing, C/Space/1 one field each, a held key giving
-nothing over 31 passes of the paused loop, and a paused start with and without a way out); `gcc -std=gnu99 -Wall -Wextra` clean on
+nothing over 31 passes of the paused loop, a paused start with and without a way out, and — with
+the real `keyboard.c` linked — the claim's four bits in the window, a claimed key reaching no pad
+button while an unclaimed one does, and the keys coming back with no session, with
+`DHD_TAS_KEYS=0`, and when an online session ends one); `gcc -std=gnu99 -Wall -Wextra` clean on
 `tas.c` and `-fsyntax-only` clean on the four hook sites (`pad.c`, `autopad.c`, `kernel.c`,
 `online.c`); `tools/check_docs.py` and `tools/check_tree.py` clean.
+
+On the user's machine this is confirmed by a fact that is easy to read the wrong way round: the
+native link must **not** produce `port_hle_tas.c.obj`, and `host64.lib` must hold no `tas_` symbol
+at all (`dumpbin /symbols build/host64.lib | findstr tas_` — nothing; before this change the same
+command showed `keyboard.c` asking for `tas_key_claimed`). No host unit needs the TAS: the only
+TAS name any of them mentions is `tas_key_claimed`, and that is a `static inline` in `tas.h` now.
+A `port_hle_tas.c.obj` appearing in the archive would mean some host code still calls into the
+module's TAS and the boundary has been crossed in the wrong direction again — a finding, not a fix.
 
 Not verified here, and not claimable without them: the state traces of a base build and of this
 one with no `DHD_TAS_*` set (the hooks are written to be inert, and this lane cannot trace), a

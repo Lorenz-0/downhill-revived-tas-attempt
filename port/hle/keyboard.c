@@ -202,8 +202,10 @@ void keyboard_pad(const struct ControlsLayout *layout, const uint8_t down[256], 
             int key = layout->input[t][s], way = 0, axis;
             if (!key || key == VK_ESCAPE_) continue;
             /* The TAS's own keys (C, Space, 1, P; tas.h) are not the game's while a TAS session is
-               live: stepping a field is not also the kick, and a pause is not the pedal. The key is
-               let go here too, so it is not left held when the session's claim ends. */
+               live: stepping a field is not also the kick, and a pause is not the pedal. The answer
+               is the session's published claim (tas.h tas_key_claimed), which is how it reaches
+               this file's host copy without calling into the module. The key is let go here too,
+               so it is not left held when the session's claim ends. */
             if (tas_key_claimed((unsigned)key)) { state.held[key] = 0; continue; }
             if (!down[key]) {
                 state.held[key] = 0;
