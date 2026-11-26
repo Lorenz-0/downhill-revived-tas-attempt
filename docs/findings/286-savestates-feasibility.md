@@ -178,10 +178,9 @@ host service (`host_service_gs_restore`, the exact inverse of the snapshot `gs.c
 all along).
 
 **What a savestate contains:** RAM, the scratchpad, the HLE window, VU0/VU1's memory, the CPU's
-registers (block `cpu`), the whole GS prefix (4 MiB of VRAM and every register, through the existing
-snapshot service, after the field's graphics work has been waited for), the kernel's own state (256
-threads with their saved registers, 512 semaphores, the alarms, the interrupt handlers and counters,
-the fields counted) and padman's. **≈36.3 MB**; the whole file is checked — magic, version, block
+registers (block `cpu`), the kernel's own state (256 threads with their saved registers, 512
+semaphores, the alarms, the interrupt handlers and counters, the fields counted) and padman's.
+**≈32.3 MB**; the whole file is checked — magic, version, block
 count, every block's name and size, and the file's own length — **before one byte of the machine is
 written**, so a file that is not this state is refused whole.
 
@@ -218,6 +217,19 @@ the same class of mistake as the EE stacks (reading a region because its address
 layer down. The block now reads `PS2_RAM_BASE`, which is what `state_trace.c` has always used for
 RAM (`PS2_PTR`, `PS2_SCRATCHPAD`), and the scratchpad goes through `PS2_SCRATCHPAD` by name.
 
+**And the GS is not in a savestate (it was, for two builds).** Its 4 MiB prefix went in through the
+snapshot service after `host_service_graphics_wait()`, and that wait is the one thing a save does that
+a menu save does not need: the port draws on worker threads and defers the vsync (finding 090 HO1),
+so a wait for the drawing from inside the field's vblank is a synchronous stall in a pipeline that
+the *next* field is meant to overlap — `state_trace.c` says as much and offers `DHD_STATE_NOWAIT=1`
+to skip it. The first save, in the main menu, worked and loaded (field 1602, 36.3 MB, every block);
+the second, in a race, never returned: no `savestate: saved` line, and the freeze log's dump put the
+game thread outside the exe with the same translated-code frames as the earlier trap. So the block is
+gone, with the wait, and the unit is what its own rule says the renderer is — not state: RAM, the
+scratchpad, the HLE window, VU memory, the CPU, the kernel and padman, ≈32.3 MB, no host call in the
+save path at all but the file itself. The GS comes back when there is a point in the field where the
+workers are quiet by construction, not when one can be waited for.
+
 **What the first two logs a report came with actually contained** (worth keeping, because between
 them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
 closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line
@@ -230,8 +242,8 @@ writes is `dhd.log` **of that run**, and its own line first (`Downhill Revived 0
 So this unit also keeps `savestate-trace.txt` beside the game: one line per action, the file opened
 and closed per line, so the last line is on disk before anything can end the process. `boot: …`
 means the build has this and reached the first field; a `key: Ctrl+5` line without a `save:` line
-means the key was read; `save: block gs 4200032 bytes` with nothing after it means the process ended
-inside the GS stream; no `boot:` line at all means the exe is not this build (or the game never
+means the key was read; `save: block ram 33554432 bytes` with nothing after it means the process
+ended inside that block; no `boot:` line at all means the exe is not this build (or the game never
 started).
 
 **And the third "the game dies" report was not a die at all.** Its log ended

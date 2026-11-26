@@ -273,10 +273,6 @@ void host_service_gs_trace_pop(uint32_t address);
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes);
 /* ... and back, for a savestate (finding 286): the same prefix, written into the live GS. */
 void host_service_gs_restore(uint32_t address, uint32_t bytes);
-/* One piece of that prefix, by offset: a savestate streams it, because 4 MiB is more than the
-   module's data has room for and more than it can count on the heap for (finding 286). */
-void host_service_gs_image(uint32_t address, uint32_t offset, uint32_t bytes);        /* GS -> guest */
-void host_service_gs_image_write(uint32_t address, uint32_t offset, uint32_t bytes);  /* guest -> GS */
 void host_console_write(uint32_t address, uint32_t bytes);
 
 /* Wall-clock presentation state stays native. These contain no guest pointers. */

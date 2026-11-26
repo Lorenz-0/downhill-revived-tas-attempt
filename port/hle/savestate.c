@@ -12,11 +12,13 @@
      each: copying the whole 16 MiB area reads pages that were never committed and the process ends
      as the guest's own fault does. They are not in a savestate (finding 286).
    - A 4 MiB array here does not fit the module's data — the wasm link refuses it ("initial memory
-     too small") — and taking it from the heap means growing the module's memory into a 4 MiB run,
-     which is not memory this unit can rely on being committed. So the GS prefix is *streamed*: one
-     static chunk at a time, straight into (or out of) the file, through the two piece services in
-     host_api.h. Nothing here is malloc'd and nothing here is bigger than 64 KiB plus the kernel's
-     and padman's own images.
+     too small"). The GS prefix was streamed through a 64 KiB piece at a time instead, behind a wait
+     for the graphics workers, and that wait is what this unit no longer does: the port draws on
+     worker threads and defers the vsync (finding 090 HO1), so waiting for the drawing from inside
+     the field stalls the pipeline the next field needs. A save in the main menu worked and a save
+     in a race never returned (finding 286). The GS is not in a savestate now, which is what this
+     unit's own rule says happened to the renderer's caches: they are re-creatable, not state. It
+     comes back when there is a point in the field where the workers are quiet by construction.
 
    A savestate belongs to the session and the build that wrote it: the code's live frames are host
    memory that a fresh boot has not got (finding 286's one obstacle), so loading is supported within
@@ -36,7 +38,6 @@
 #include "fps.h"
 #include "ps2asm.h"
 #include "../runtime/memory.h"   /* PS2_RAM_BASE: where PS2 address 0 is in the module */
-#include "../gs/gs.h"
 
 extern ps2_cpu ps2;
 extern uint64_t kernel_vsync_count;   /* kernel.c: the field a savestate belongs to */
@@ -66,7 +67,6 @@ static void breadcrumb(const char *fmt, ...)
 enum {
     SS_VERSION = 1,
     SS_MAX_BLOCKS = 12,
-    SS_CHUNK = 64 * 1024,              /* the GS stream's piece, and a module static's sensible size */
     KERNEL_IMAGE_MAX = 256 * 1024,     /* kernel.c's KernelState is about 205 KiB */
     PAD_IMAGE_MAX = 4096
 };
@@ -75,9 +75,7 @@ typedef struct {
     uint32_t version, field, blocks, total;
 } SsHeader;
 
-/* The GS stream's piece, and the two units' own state. All static: a static's guest address is one
-   the host services can be given, on every host. */
-static uint8_t gs_chunk[SS_CHUNK];
+/* The two units' own state. Static: no allocation, and nothing here is bigger than 256 KiB. */
 static uint8_t kernel_image[KERNEL_IMAGE_MAX], pad_image[PAD_IMAGE_MAX];
 static uint32_t kernel_bytes, pad_bytes;
 
@@ -136,13 +134,12 @@ void savestate_init(void)
             "while an online race is; a savestate is the TAS's, finding 286)\n", quick_path);
 }
 
-static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes, int chunked)
+static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes)
 {
     if (*n >= SS_MAX_BLOCKS) return;
     snprintf(b[*n].name, SS_NAME, "%s", name);
     b[*n].data = data;
     b[*n].bytes = bytes;
-    b[*n].chunked = chunked;
     (*n)++;
 }
 
@@ -153,23 +150,19 @@ static int collect(SsBlock *b)
     if (!sizes()) return 0;
     kernel_state_save(kernel_image);
     pad_state_save(pad_image);
-    /* Every packet the field fed has reached the GS state (state_trace.c waits the same way before
-       its own snapshot). */
-    host_service_graphics_wait();
     /* PS2 address 0 is at PS2_RAM_BASE (0x08000000) inside the module, not at 0: the module's own
        shadow stack and its null guard page live in the first 4 MiB of its memory, so a copy from 0
        reads the stack and then the guard page, and the runtime ends the process with an
        out-of-bounds trap. This unit did exactly that on Windows (finding 286): the log's last line
        was "savestate: write ram 33554432 bytes" and then "host64 trap: Out-of-bounds access". */
-    add(b, &n, "ram", (void *)(uintptr_t)PS2_RAM_BASE, 0x02000000u, 0);
+    add(b, &n, "ram", (void *)(uintptr_t)PS2_RAM_BASE, 0x02000000u);
     /* Not the 64 EE thread stacks at 0x06000000: see the note at the top of this file. */
-    add(b, &n, "scratch", GUEST(PS2_SCRATCHPAD), 0x4000u, 0);
-    add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE, 0);
-    add(b, &n, "vu", GUEST(0x11000000), 0x10000u, 0);   /* as state_trace.c reads it (finding 286) */
-    add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2, 0);
-    add(b, &n, "gs", gs_chunk, (uint32_t)offsetof(Gs, sync), 1);   /* the piece buffer, streamed */
-    add(b, &n, "kernel", kernel_image, kernel_bytes, 0);
-    add(b, &n, "pad", pad_image, pad_bytes, 0);
+    add(b, &n, "scratch", GUEST(PS2_SCRATCHPAD), 0x4000u);
+    add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE);
+    add(b, &n, "vu", GUEST(0x11000000), 0x10000u);   /* as state_trace.c reads it (finding 286) */
+    add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2);
+    add(b, &n, "kernel", kernel_image, kernel_bytes);
+    add(b, &n, "pad", pad_image, pad_bytes);
     return n;
 }
 
@@ -188,31 +181,19 @@ static void log_block(const char *what, const char *name, uint32_t bytes)
     hle_log("savestate: %s %-7s %u bytes\n", what, name, (unsigned)bytes);
 }
 
-/* One block's bytes, either straight from its memory or the GS prefix a piece at a time. */
+/* One block's bytes, with a breadcrumb before each: a run that ends inside one says which. */
 static int put(FILE *f, const SsBlock *b)
 {
     breadcrumb("save: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("write", b->name, b->bytes);
-    if (!b->chunked) return fwrite(b->data, 1, b->bytes, f) == b->bytes;
-    for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
-        uint32_t n = b->bytes - at < SS_CHUNK ? b->bytes - at : SS_CHUNK;
-        host_service_gs_image(GADDR(gs_chunk), at, n);
-        if (fwrite(gs_chunk, 1, n, f) != n) return 0;
-    }
-    return 1;
+    return fwrite(b->data, 1, b->bytes, f) == b->bytes;
 }
 
 static int get(FILE *f, const SsBlock *b)
 {
     breadcrumb("load: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("read", b->name, b->bytes);
-    if (!b->chunked) return fread(b->data, 1, b->bytes, f) == b->bytes;
-    for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
-        uint32_t n = b->bytes - at < SS_CHUNK ? b->bytes - at : SS_CHUNK;
-        if (fread(gs_chunk, 1, n, f) != n) return 0;
-        host_service_gs_image_write(GADDR(gs_chunk), at, n);
-    }
-    return 1;
+    return fread(b->data, 1, b->bytes, f) == b->bytes;
 }
 
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field)
@@ -231,6 +212,7 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
     for (int i = 0; i < count; i++) h.total += blocks[i].bytes;
     /* The table of contents, then the bytes: the reader checks every name and size, and the file's
        length, before it writes one of them. */
+    breadcrumb("save: file open, table next");
     int ok = fwrite(&h, sizeof h, 1, f) == 1;
     for (int i = 0; i < count && ok; i++) {
         char name[SS_NAME] = {0};
@@ -238,8 +220,10 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
         memcpy(name, blocks[i].name, sizeof name);
         ok = fwrite(name, sizeof name, 1, f) == 1 && fwrite(&bytes, sizeof bytes, 1, f) == 1;
     }
+    breadcrumb("save: table written, blocks next");
     for (int i = 0; i < count && ok; i++) ok = put(f, &blocks[i]);
     if (fclose(f) != 0) ok = 0;
+    breadcrumb("save: file closed");
     if (!ok) {
         hle_log("savestate: '%s' was not written whole\n", path);
         return 0;
@@ -264,8 +248,8 @@ int savestate_save(const char *path)
     breadcrumb("save: done, %.1f MB", megabytes(b, n));
     said_blocks = 1;
     hle_log("savestate: saved '%s' at field %llu, %.1f MB (ram, scratch, the HLE window, VU, the CPU, "
-            "the GS, the kernel's threads and padman; not the EE stacks or the live frames — finding "
-            "286)\n", path, (unsigned long long)kernel_vsync_count, megabytes(b, n));
+            "the kernel's threads and padman; not the EE stacks, the live frames or the renderer's "
+            "own state — finding 286)\n", path, (unsigned long long)kernel_vsync_count, megabytes(b, n));
     return 1;
 }
 
@@ -339,9 +323,9 @@ int savestate_load(const char *path)
         return 0;
     }
     breadcrumb("load: %d blocks back, saved at field %u", n, (unsigned)field);
-    /* The GS is back already (its block is written as it is read). What the units hold outside guest
-       memory goes back now, then the clock is rebased: the time between the save and the load is no
-       game time. */
+    /* What the units hold outside guest memory goes back now, then the clock is rebased: the time
+       between the save and the load is no game time. The renderer keeps what it had (it is not in a
+       savestate): a picture can be stale until the game draws again. */
     kernel_state_load(kernel_image);
     pad_state_load(pad_image);
     port_clock_rebase();

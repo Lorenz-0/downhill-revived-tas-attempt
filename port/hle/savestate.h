@@ -28,9 +28,8 @@ int savestate_load(const char *path);
 #define SS_NAME 24
 typedef struct {
     char name[SS_NAME];
-    void *data;        /* the bytes, when chunked is 0; the piece buffer when it is 1 */
+    void *data;
     uint32_t bytes;
-    int chunked;       /* 1: the GS prefix, copied a piece at a time through host_api.h */
 } SsBlock;
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field);
 int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint32_t *field);
