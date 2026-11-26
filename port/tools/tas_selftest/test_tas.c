@@ -5,7 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <time.h>
+#endif
 
 #include "tas.h"
 
@@ -22,6 +28,23 @@ int port_delta_clock(void) { return delta_clock; }
 void port_clock_rebase(void) { rebase_calls++; }
 void host_service_gs_pump_messages(void) { }
 void host_service_gs_window_close(void) { window_closed = 1; }
+/* The stub host's clock, with the port's contract (host_api.h, hle.h): host_wall_seconds is a
+   monotonic wall clock in seconds, and host_sleep_ms really blocks. Both matter to the unit under
+   test: tas.c's pause times a 4 ms sleep to decide whether this host can hold the game at all
+   (host_can_block), so a sleep that returned at once would silently turn frame advance off.
+   Each platform uses its own timing API; the tests are the same on both. */
+#ifdef _WIN32
+double host_wall_seconds(void)
+{
+    static LARGE_INTEGER frequency;   /* counted once; the tests are single-threaded */
+    LARGE_INTEGER now;
+    if (!frequency.QuadPart) QueryPerformanceFrequency(&frequency);
+    if (!frequency.QuadPart) return 0.0;
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)frequency.QuadPart;
+}
+void host_sleep_ms(unsigned ms) { Sleep((DWORD)ms); }
+#else
 double host_wall_seconds(void)
 {
     struct timespec ts;
@@ -35,6 +58,7 @@ void host_sleep_ms(unsigned ms)
     ts.tv_nsec = (long)(ms % 1000) * 1000000L;
     nanosleep(&ts, NULL);
 }
+#endif
 void host_end_add(int stage, const char *name, void (*fn)(void)) { (void)stage; (void)name; atexit(fn); }
 void hle_log(const char *fmt, ...)
 {
@@ -188,6 +212,16 @@ int main(int argc, char **argv)
         tas_capture(1, &other);
         tas_vsync();
         state("after");
+        return 0;
+    }
+    if (!strcmp(sc, "clock-contract")) {
+        /* the timing shim itself: monotonic, and a sleep that really sleeps */
+        double before = host_wall_seconds();
+        host_sleep_ms(20);
+        double after = host_wall_seconds();
+        double again = host_wall_seconds();
+        printf("monotonic=%d slept_ms=%.1f\n", again >= after && after >= before, (after - before) * 1000.0);
+        fflush(stdout);
         return 0;
     }
     if (!strcmp(sc, "clock")) {

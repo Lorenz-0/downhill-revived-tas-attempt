@@ -108,19 +108,38 @@ drives the unit through the order the game itself uses, one field at a time —
 
     python port/tools/tas_selftest.py
 
-72 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
-cover: playback and recording offline through that order, on player 1's pad only (a movie answers
-for no other pad, and a second pad's capture never reaches the file); the not-reproducible warning
-when the game steps by wall time (a stub for `port_delta_clock`); a released pause rebasing the
-game clock once; an online session dropping playback,
-recording and a pause before any pad of the field is read, with its file closed and its message
-said once; `DHD_TAS_PAUSE` and a `pause` command in an online session never holding the game, and
-a paused session entering one released rather than blocked; every way a movie is refused (columns,
-order, sign, overflow, a truncated line, a missing file) leaving nothing playable; the same for an
-allocation failure, by a second build linked with `--wrap=realloc`; and the recording's file closed
-by `quit`, by the end of the game and by a failed write. Two checks link such a build (`--wrap`
-needs GNU ld); a toolchain without it skips them and says so. `tools/check.py quick` runs the
-suite, and so does the `checks` workflow.
+74 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
+unit's pause gate times a 4 ms sleep to decide whether it may hold the game); playback and
+recording offline through the order above, on player 1's pad only (a movie answers for no other
+pad, and a second pad's capture never reaches the file); the not-reproducible warning when the
+game steps by wall time (a stub for `port_delta_clock`); a released pause rebasing the game clock
+once; an online session dropping playback, recording and a pause before any pad of the field is
+read, with its file closed and its message said once; `DHD_TAS_PAUSE` and a `pause` command in an
+online session never holding the game, and a paused session entering one released rather than
+blocked; every way a movie is refused (columns, order, sign, overflow, a truncated line, a
+missing file) leaving nothing playable; the same for an allocation failure, by a second build
+linked with `--wrap=realloc`; and the recording's file closed by `quit`, by the end of the game
+and by a failed write. `tools/check.py quick` runs the suite, and so does the `checks` workflow.
+
+It is portable: the stub host's clock and sleep are the platform's own — POSIX `clock_gettime`
+(`CLOCK_MONOTONIC`) and `nanosleep`, Windows `QueryPerformanceCounter`/`QueryPerformanceFrequency`
+and `Sleep` — and the tests are the same on both. On Windows the harness builds with a clang/gcc
+driver over the Visual Studio toolchain (`clang`, or `DHD_CC`), from an x64 Native Tools prompt so
+the SDK's headers are found, and the driver's `.exe` output name is what the runner executes.
+Three notes on Windows coverage, since two families of checks vary by toolchain and report `SKIP`,
+never `PASS` (the summary counts them):
+
+- **The fault-injection builds need a linker that can interpose symbols** — GNU ld's `--wrap`.
+  MSVC's `link.exe` and `lld-link` have no equivalent, so the seven checks built on
+  `failmalloc.c`/`failflush.c` (allocation failure and a failed field write) report `SKIP` there;
+  every ordinary check still runs.
+- **Windows has no `/dev/full`**, so the header-write-failure pair reports `SKIP`; an
+  unopenable recording path (a directory) is still checked on both.
+- So Linux with gcc: 74 pass. Windows with clang: 65 pass, 9 skip.
+
+The runner prints a `note` line whenever it skips a family, naming the reason, and exits nonzero
+only for a real failure.
 
 What it cannot show: the game itself. Whether the field the game consumes is the field the movie
 names, and whether a recorded run plays back to the same state, are the state-trace checks in

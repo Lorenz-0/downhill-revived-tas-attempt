@@ -15,11 +15,13 @@ wrong where the game enters it, which is exactly the fault this suite was writte
 
     python port/tools/tas_selftest.py            # every check
 
-Needs a C compiler and nothing else: cc, gcc or clang, or DHD_CC. Two of the checks link a
-fault-injection build with GNU ld's --wrap (`allocation failure` and `a failed field write`); a
-toolchain without it skips them and says so. No game, no GPU, no disc, no network.
+Needs a C compiler and nothing else: cc, gcc or clang, or DHD_CC, on Linux, macOS or Windows (the
+stub host's clock is the platform's own). Seven of the checks link a fault-injection build with GNU
+ld's --wrap (`allocation failure` and `a failed field write`); a linker without it — MSVC's
+link.exe, lld-link — skips them and says so, and Windows skips the two `/dev/full` checks for the
+same reason: reported, never counted as passes. No game, no GPU, no disc, no network.
 """
-import os, shutil, subprocess, sys
+import os, re, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -105,6 +107,12 @@ def run_blocking(binary, args, env, timeout=2.0):
         return 1, out, err
 
 
+def built(path):
+    """The executable the driver produced: a Windows driver appends .exe to -o's name, and
+    subprocess needs the name with it."""
+    return path + '.exe' if os.path.exists(path + '.exe') else path
+
+
 def pads(out):
     return [line.split('pad=')[1].strip() for line in out.splitlines() if 'pad=' in line]
 
@@ -122,18 +130,41 @@ def main():
     plain = os.path.join(BUILD, 'test_tas')
     cmd = [cc] + CFLAGS + INCLUDES + ['-o', plain, harness, tas]
     p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
+    if p.returncode != 0 or not os.path.exists(built(plain)):
         say('tas selftest: cannot build the harness:\n' + p.stdout + p.stderr)
+        if os.name == 'nt':
+            say('  a Windows clang is a driver over the Visual Studio toolchain: run this from an '
+                'x64 Native Tools prompt (or with INCLUDE/LIB set), and set DHD_CC if clang is '
+                'not on PATH')
         return 1
+    plain = built(plain)
 
-    fault = {}
+    fault, fault_error = {}, ''
     for name, extra, ld in (('nomem', 'failmalloc.c', '--wrap=realloc'),
                             ('flush', 'failflush.c', '--wrap=fflush')):
         out = os.path.join(BUILD, 'test_tas_' + name)
         p = subprocess.run([cc] + CFLAGS + INCLUDES + ['-Wl,' + ld, '-o', out, harness,
                                                       os.path.join(SRC, extra), tas],
                            capture_output=True, text=True)
-        fault[name] = out if p.returncode == 0 else None
+        ok = p.returncode == 0 and os.path.exists(built(out))
+        fault[name] = built(out) if ok else None
+        if not ok and not fault_error:
+            lines = [l for l in (p.stderr + p.stdout).strip().splitlines() if l.strip()]
+            fault_error = lines[-1] if lines else 'the link failed'
+    if not all(fault.values()):
+        # MSVC's link.exe and lld-link have no --wrap: the fault-injection builds are the only
+        # tests that need it, so they report SKIP here rather than being dropped from the count.
+        say('note  the fault-injection builds need a linker that can interpose symbols (GNU ld '
+            '--wrap); this toolchain cannot, so those checks report SKIP, never PASS')
+        say('      ' + fault_error)
+
+    # 0. the stub host's clock: monotonic, and a sleep that really sleeps (tas.c's pause gate
+    #    times a 4 ms sleep to decide whether frame advance can hold at all)
+    rc, out, err = run(plain, ['clock-contract'], {})
+    check('the stub host clock is monotonic', 'monotonic=1' in out, out + err)
+    slept = re.search(r'slept_ms=([0-9.]+)', out)
+    check('host_sleep_ms really sleeps', bool(slept) and 10.0 <= float(slept.group(1)) <= 1500.0,
+          out + err)
 
     # 1. offline playback survives the first vsync and applies the movie's field
     movie = write('movie.txt', MOVIE)
@@ -298,7 +329,8 @@ def main():
 
     # 21. a write failure ends the recording, keeps the fields written before it, never blocks the game
     if os.name == 'nt':
-        check('write failure: reported', None)          # no /dev/full on Windows
+        say('note  Windows has no /dev/full: the header-write-failure checks report SKIP')
+        check('write failure: reported', None)
         check('write failure: the game still runs', None)
     else:
         rc, out, err = run(plain, ['rec3'], {'DHD_TAS_RECORD': '/dev/full'})

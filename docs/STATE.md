@@ -154,7 +154,8 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   directions, and a released pause rebases the game clock so paused seconds cost no field. A movie
   is played whole or not at all, and only repeats on the fixed step (`DHD_FRAME_CLOCK=1`; a paced
   session is told so once). Its tests run on the host without the game
-  (`port/tools/tas_selftest.py`, docs/TESTING.md, 72 checks). No savestates, rewind or editor yet;
+  (`port/tools/tas_selftest.py`, docs/TESTING.md, 74 checks; POSIX and Windows timing, the
+  fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet;
   a movie is valid only for the boot that produced it.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's
   `disc_problem`: ISO 9660, SYSTEM.CNF booting SCUS_971.77, the whole declared volume), then the

@@ -201,7 +201,7 @@ care about, and the TAS is written against these facts:
 
 `port/tools/tas_selftest.py` (and `docs/TESTING.md`, "The TAS unit") builds `tas.c` into a stub
 host and drives it through the game's field order, one field at a time, with `pads_online()`,
-`host_sleep_ms()`, the game clock and the window close under the test's control. 72 checks, 0
+`host_sleep_ms()`, the game clock and the window close under the test's control. 74 checks, 0
 failed, seconds to run, a C compiler and nothing else; two of them link a fault-injection build (`--wrap=realloc`,
 the movie chunk; `--wrap=fflush`, the third field write) and are skipped where the linker has no
 `--wrap`. They cover, in the order the review asked for them: offline playback surviving the first
@@ -219,6 +219,13 @@ appears exactly when the game steps by wall time and not otherwise, and a releas
 the game clock once (never when no pause was held, never when the online gate released it).
 Recording's file is checked closed with its fields when a session ends the TAS, when `quit` ends
 the game and when the game ends normally, and a failed write ending it with its complete fields.
+
+The harness is portable: its clock and sleep are POSIX `clock_gettime`/`nanosleep` on one side and
+Windows `QueryPerformanceCounter`/`Sleep` on the other, with one check of that contract first (a
+sleep that does not block would silently turn the unit's frame advance off), and the tests are the
+same on both. Two families report SKIP rather than PASS where the toolchain cannot support them,
+and the runner says so: the fault-injection builds need GNU ld's `--wrap` (MSVC's `link.exe` and
+`lld-link` have no equivalent — seven checks), and Windows has no `/dev/full` (two checks).
 
 ## The road to savestates and rewind
 
@@ -282,7 +289,7 @@ diff is the honest scope of the savestate work.
 
 Not merged yet, and not to be merged before the game-level checks below are made.
 
-Verified here: `tas_selftest.py` 72 checks, 0 failed; `gcc -std=gnu99 -Wall -Wextra` clean on
+Verified here: `tas_selftest.py` 74 checks, 0 failed; `gcc -std=gnu99 -Wall -Wextra` clean on
 `tas.c` and `-fsyntax-only` clean on the four hook sites (`pad.c`, `autopad.c`, `kernel.c`,
 `online.c`); `tools/check_docs.py` and `tools/check_tree.py` clean.
 
