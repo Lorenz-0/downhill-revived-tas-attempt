@@ -41,8 +41,14 @@ editor, a timeline, video capture.
       then steps by wall time), and a released pause rebases the game clock so paused seconds are
       never paid back as physics. No emulator assumption was found to remove: the hooks were
       already written against the game's own VBLANK, padman frames and libpad buffer.
-- [ ] the checks above that need the toolchain and the disc: a real run's state traces, and the
-      game by hand.
+- [x] 2026-11-26: by hand, on the user's Windows PC at `f612424`: `DHD_FRAME_CLOCK=1
+      DHD_FRAME_PACE=1` holds the pictures at the field rate, P holds and releases the game, and
+      C, Space and 1 each advance exactly one field and leave the game held. The first two runs
+      found the two bugs of revisions 7 and 8 (the keys never crossing the boundary, and the step
+      keys needing a pause first); both fixed, and this run is the confirmation.
+- [ ] the checks that need a state trace against a base build: a recorded run and its playback
+      giving the same trace, and the hooks inert with no `DHD_TAS_*` set (`DHD_STATE_TRACE`), plus
+      `check.py port` for the host side.
 
 ## What a movie is
 
@@ -419,7 +425,10 @@ held loop (exactly one more field), and reads both log lines. Not verified here:
 
 ## Result
 
-Not merged yet, and not to be merged before the game-level checks below are made.
+Not merged yet. The by-hand acceptance — pause, frame advance, the keys, the displayed rate — passed
+on the user's Windows PC at `f612424` (revision 8). Two checks that need a state trace against a base
+build are still open (a recorded run replaying to the same trace, and the hooks inert without
+`DHD_TAS_*`), and the merge is the user's decision.
 
 Verified here: `tas_selftest.py` 94 checks, 0 failed (the two additions' checks: the four keys
 claimed only in a session, P holding and releasing, C/Space/1 one field each, a held key giving

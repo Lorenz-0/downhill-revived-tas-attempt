@@ -159,7 +159,9 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
   (`port/tools/tas_selftest.py`, docs/TESTING.md, 108 checks; POSIX and Windows timing, the
   fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet;
-  a movie is valid only for the boot that produced it.
+  a movie is valid only for the boot that produced it. Validated by hand on Windows at `f612424`:
+  the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and hold; a
+  recorded run's trace equality with its playback is still untested.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's
   `disc_problem`: ISO 9660, SYSTEM.CNF booting SCUS_971.77, the whole declared volume), then the
   game's data check in the core. Desktop launcher uses a Rust file-reader FFI adapter; Android's
