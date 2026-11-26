@@ -271,10 +271,18 @@ void host_service_gs_trace_begin(void);
 uint32_t host_service_gs_trace_size(void);
 void host_service_gs_trace_pop(uint32_t address);
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes);
+/* ... and back, for a savestate (finding 286): the same prefix, written into the live GS. */
+void host_service_gs_restore(uint32_t address, uint32_t bytes);
 void host_console_write(uint32_t address, uint32_t bytes);
 
 /* Wall-clock presentation state stays native. These contain no guest pointers. */
 void host_pacing_config(double period, uint64_t field);
+/* The pictures keep a grid of the field rate while the game itself runs unpaced (kernel.c:
+   DHD_FRAME_CLOCK=1 with DHD_FRAME_PACE, finding 285's TAS). 0 hands them on at once. */
+void host_pacing_present(int on);
+/* The period the pictures of a paced fixed-step run keep (one a field: 1001/60000 on NTSC,
+   whatever the game's frame rate setting says). kernel_init sets it. */
+void host_pacing_present_period(double period);
 void host_pacing_wait(void);
 void host_pacing_handoff(int fresh);
 void host_pacing_input(void);
@@ -323,6 +331,14 @@ void host_service_text_input_begin(void);
 void host_service_text_input_end(void);
 int host_service_text_input_edit(uint32_t a0, int a1, uint32_t a2);
 int host_service_clipboard_set(uint32_t text);  /* 1 when the text is on the clipboard */
+
+/* ---- the keyboard's live state (port/hle/keyboard.c, finding 285) ----
+   SDL runs on the host and its key events go to the host's copy of keyboard.c, so the core (whose
+   TAS keys live there) asks through here: 1 while the game's window has the keyboard, and 1 while
+   that key (a Windows virtual-key code) is held. No pointer crosses: the core's buffer would be a
+   guest address the host's keyboard would have to know how to write. */
+int host_service_keyboard_focused(void);
+int host_service_keyboard_key(unsigned vk);
 
 /* ---- keyboard and controller bindings (port/hle/controls_settings.c, finding 157) ----
    device: 0 the keyboard, 1 Controller 1, 2 Controller 2 (controls_table.h's CONTROL_*). */

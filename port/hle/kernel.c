@@ -7,6 +7,7 @@
    Interrupts are delivered at kernel entries and while every thread waits: VBLANK_START and
    VBLANK_END at 59.94 Hz of host time, the alarms (SetAlarm) on the same clock. */
 #include "hle.h"
+#include "tas.h"
 #include "../gs/gs.h"
 #include "../gs/present.h"
 #include "timer.h"
@@ -20,6 +21,7 @@
 #include <string.h>
 
 #include "ps2asm.h"
+#include "savestate.h"
 #include "../runtime/portable.h"
 
 int hle_verbose;
@@ -738,6 +740,12 @@ static int paced;
    gives host_wall_seconds real time). Deterministic runs (DHD_FRAME_CLOCK=1 alone) keep the
    nominal step. */
 static int wall_steps;
+/* The pictures' pacing while the game runs unpaced (DHD_FRAME_CLOCK=1 and DHD_FRAME_PACE,
+   kernel_init): host.c's pacing_present holds each picture to a grid of the field rate, so a
+   deterministic run keeps the screen at about 60 fields a second without the game's step ever
+   becoming wall time. Never the just-in-time frames: those move the pad read, and a movie's
+   field must be the field the movie names. */
+static int present_pace;
 static PaceGrid pace_grid;
 
 /* An online race waited `seconds` for the other players: the following frames keep their spacing
@@ -856,6 +864,7 @@ static void stall_log(void)
 
 static void vsync(void)
 {
+    tas_frame_advance_wait();
     stall_log();
     slow_frame();
     port_clock_observe();
@@ -925,6 +934,11 @@ static void vsync(void)
         pad_refresh();  /* the game reads the pad after this VBLANK: the state at the end of the wait */
     }
     disc_check_field(kernel_vsync_count);  /* host-side work only: no game state */
+    tas_vsync();
+    /* A savestate is taken and put back at this same quiet point (finding 286): every graphics work
+       the field started has been waited for, the VBLANK handlers have run, and the pad has been
+       refreshed — so what is copied is the state the trace hashes, plus the layers it leaves out. */
+    savestate_field();
     state_trace_field(kernel_vsync_count, next_vsync);  /* DHD_STATE_TRACE: the end of the field */
 }
 
@@ -1105,6 +1119,34 @@ void kernel_init(void)
     const char *fps_wall = host_getenv("DHD_FPS_WALL");
     wall_steps = paced || (fps_wall && atoi(fps_wall) == 1);
     port_clock_wall(wall_steps);
+    /* Presentation pacing (finding 285's TAS). A deterministic run is unpaced by design: the game
+       steps one fixed field at a time, as fast as it can make them, which is what makes the same
+       movie the same run and a bench fast. On a window that also handed the pictures on as fast
+       as they came. `paced` is not the switch to flip for that: it also turns fps.c's wall-clock
+       steps on (the game would step by the time the field took) and the just-in-time frames, and
+       either one changes the run a movie records. So the pictures get a grid of their own in the
+       presenter instead (host.c pacing_present): the game goes on unpaced, the screen keeps the
+       field rate. DHD_FRAME_PACE=0 hands the pictures on at once, as before; a headless or batch
+       run (no pictures at all, or a throughput measurement) is never paced. */
+    const char *pace_env = host_getenv("DHD_FRAME_PACE");
+    int pace_off = pace_env && *pace_env && !atoi(pace_env);
+    int batch = host_getenv("DHD_HEADLESS") || host_getenv("DHD_BENCH") || host_getenv("DHD_BENCH_EXIT") ||
+                host_getenv("DHD_STATE_TRACE");
+    present_pace = !paced && !pace_off && !batch;
+    host_pacing_present(present_pace);
+    /* One picture a field, whatever the game's frame rate setting says: a fixed step is a field,
+       and the screen shows one at a time (DHD_FRAME_PACE=0 hands them on at once). */
+    host_pacing_present_period(1001.0 / 60000.0);
+    if (present_pace) {
+        hle_log("pacing: the fixed step runs unpaced (a movie repeats); the pictures keep the field "
+                "rate, 59.94 a second (DHD_FRAME_PACE=0 presents them at once)\n");
+        /* The presenter holds a picture to its place; the interpolated one shows every refresh
+           instead and ignores the field rate entirely (gpu_rust.c: !n->interp). */
+        const char *interp = host_getenv("DHD_INTERP");
+        if (interp && atoi(interp) != 0)
+            hle_log("pacing: DHD_INTERP is on, so the pictures follow the display's refresh and not "
+                    "the field rate; unset DHD_INTERP to see a fixed-step run at 59.94 a second\n");
+    }
     host_service_host_init();
     host_service_gs_reset();
     state_trace_init();  /* after gs_reset, which clears the GS struct; no-op unless DHD_STATE_TRACE */
@@ -1126,6 +1168,7 @@ void kernel_init(void)
     next_vsync = VSYNC_CYCLES;
     ps2.cop0[12] = 0x10001;  /* Status: EIE, IE */
     hle_verbose = host_getenv("DHD_LOG") != NULL;
+    savestate_init();
 }
 
 void kernel_run(void (*root)(void), uint32_t gp, uint32_t stack, uint32_t stack_size)
@@ -1170,4 +1213,70 @@ void kernel_dump(void)
     }
     for (int i = 1; i < MAX_SEMAS; i++) if (semas[i].used)
         fprintf(stderr, "  semaphore %d count=%d max=%d\n", i, semas[i].count, semas[i].max_count);
+}
+
+/* The kernel's own state, for a savestate (savestate.h, finding 286): what the game cannot see in its
+   RAM — the threads it runs, the semaphores and alarms it waits on, the interrupts it is told about —
+   plus the counters it reads. The threads' saved registers are here, not in RAM, and the trace leaves
+   them out on purpose ("wall-clock and host state are never hashed"); a restore needs them. */
+typedef struct {
+    Thread threads[MAX_THREADS];
+    Sema semas[MAX_SEMAS];
+    Alarm alarms[MAX_ALARMS];
+    HandlerEntry intc_handlers[MAX_HANDLERS], dmac_handlers[MAX_HANDLERS];
+    uint32_t intc_enabled, dmac_enabled, intc_stat;
+    int next_handler_id;
+    uint64_t next_vsync, field, gs_imr;
+    uint32_t vsync_flag_addr, vsync_csr_addr, heap_end;
+    int64_t order_back, order_front;
+    int current_index;   /* current, as a thread index (-1 while the idle loop runs) */
+} KernelState;
+
+uint32_t kernel_state_size(void) { return (uint32_t)sizeof(KernelState); }
+
+void kernel_state_save(void *dst)
+{
+    KernelState *k = dst;
+    memset(k, 0, sizeof *k);
+    memcpy(k->threads, threads, sizeof threads);
+    memcpy(k->semas, semas, sizeof semas);
+    memcpy(k->alarms, alarms, sizeof alarms);
+    memcpy(k->intc_handlers, intc_handlers, sizeof intc_handlers);
+    memcpy(k->dmac_handlers, dmac_handlers, sizeof dmac_handlers);
+    k->intc_enabled = intc_enabled;
+    k->dmac_enabled = dmac_enabled;
+    k->intc_stat = intc_stat;
+    k->next_handler_id = next_handler_id;
+    k->next_vsync = next_vsync;
+    k->field = kernel_vsync_count;
+    k->gs_imr = gs_imr;
+    k->vsync_flag_addr = vsync_flag_addr;
+    k->vsync_csr_addr = vsync_csr_addr;
+    k->heap_end = heap_end;
+    k->order_back = order_back;
+    k->order_front = order_front;
+    k->current_index = current ? (int)(current - threads) : -1;
+}
+
+void kernel_state_load(const void *src)
+{
+    const KernelState *k = src;
+    memcpy(threads, k->threads, sizeof threads);
+    memcpy(semas, k->semas, sizeof semas);
+    memcpy(alarms, k->alarms, sizeof alarms);
+    memcpy(intc_handlers, k->intc_handlers, sizeof intc_handlers);
+    memcpy(dmac_handlers, k->dmac_handlers, sizeof dmac_handlers);
+    intc_enabled = k->intc_enabled;
+    dmac_enabled = k->dmac_enabled;
+    intc_stat = k->intc_stat;
+    next_handler_id = k->next_handler_id;
+    next_vsync = k->next_vsync;
+    kernel_vsync_count = k->field;
+    gs_imr = k->gs_imr;
+    vsync_flag_addr = k->vsync_flag_addr;
+    vsync_csr_addr = k->vsync_csr_addr;
+    heap_end = k->heap_end;
+    order_back = k->order_back;
+    order_front = k->order_front;
+    current = k->current_index >= 0 && k->current_index < MAX_THREADS ? &threads[k->current_index] : NULL;
 }

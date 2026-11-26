@@ -114,7 +114,8 @@ KINDS = (('ai', {}), ('player', {'DHD_PUPPET_MAP': '0:1'}))
 def game_env(track, seconds, extra):
     env = {'DHD_FRAME_CLOCK': '1', 'DHD_NAV': track_nav(track), 'DHD_RACE_SYNC': '1', 'DHD_RACE_PAD': RACE_PAD,
            'DHD_RACE_SEED': str(DEFAULT_SEED), 'DHD_SCREENSHOT': '<unset>', 'DHD_CAPTURE_AT': '<unset>',
-           'DHD_CAPTURE_INTERVAL': '<unset>', 'DHD_SCREENSHOT_WINDOW': '<unset>', 'DHD_EXACT_PROBE': '1'}
+           'DHD_CAPTURE_INTERVAL': '<unset>', 'DHD_SCREENSHOT_WINDOW': '<unset>', 'DHD_EXACT_PROBE': '1',
+           'DHD_FRAME_PACE': '0'}  # a comparison run: pictures are not paced (finding 285)
     env.update(extra)
     return env
 

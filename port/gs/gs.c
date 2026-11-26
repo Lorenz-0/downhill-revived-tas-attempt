@@ -932,3 +932,9 @@ void host_service_gs_snapshot(uint32_t address, uint32_t bytes) {
     if (bytes!=offsetof(Gs,sync)) abort();
     memcpy(GUEST(address),&gs,bytes);
 }
+void host_service_gs_restore(uint32_t address, uint32_t bytes) {
+    /* A savestate's load (finding 286, savestate.c): the prefix back into the live GS. The native
+       callbacks after it are this build's and stay as they are. */
+    if (bytes!=offsetof(Gs,sync)) abort();
+    memcpy(&gs,GUEST(address),bytes);
+}

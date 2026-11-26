@@ -31,6 +31,7 @@
      (hle_puppet_watch), so it rides nothing, sends no frame, waits for nobody's start and is in no
      result. The camera is finding 122's from GO (on.spectator). */
 #include "hle.h"
+#include "tas.h"
 #include "../runtime/portable.h"
 #include "../gs/present.h"
 #include "../net/net.h"
@@ -2580,6 +2581,7 @@ void pads_read(int player, HostPad *out)
 {
     pads_read_now(player, out);
     if (port_controls_capturing()) held_back(out);
+    tas_capture(player, out);
 }
 
 static void pads_read_now(int player, HostPad *out)

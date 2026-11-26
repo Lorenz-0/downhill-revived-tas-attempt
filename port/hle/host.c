@@ -1014,6 +1014,17 @@ static const ControlsLayout *pad_layout(int port)
    stick with the d-pad's keys then, and the d-pad in menus. */
 static int riding_controls(void) { return *(volatile int32_t *)GUEST(0x0829E290) != 0; }
 
+/** The keyboard's live state for the core (port/hle/tas.c's TAS keys, finding 285): the host's own
+   copy of keyboard.c is the one SDL writes (sdl_host.c), so the keys a TAS session acts on are read
+   from here. The core's copy of keyboard.c never sees a key event: this is the bridge, not a
+   duplicate of the state. */
+/* The keyboard's live state for the core (port/hle/tas.c's TAS keys, finding 285): SDL runs here
+   and its events go to this copy of keyboard.c, so a TAS session in the core reads the levels
+   through these two. The core's own copy of keyboard.c never sees a key event, which is why it
+   could not answer for itself. */
+int host_service_keyboard_focused(void) { return keyboard_focused(); }
+int host_service_keyboard_key(unsigned vk) { return keyboard_position_down(vk); }
+
 /* The keyboard (its layout: dhd.ini keyboard, keyboard.c), only while the game's window has the
    keyboard (keyboard_focused, fed by the SDL thread: sdl_host.c), and not while Alt, Ctrl or a
    Windows key is held, so Alt+Tab, Alt+Enter, Ctrl+Esc and the like stay the system's. A key let
@@ -1030,6 +1041,8 @@ static void keyboard_merge(HostPad *out)
         int count = keyboard_keys(layout, keys);
         for (int i = 0; i < count; i++) {
             unsigned place = keys[i];
+            /* The TAS's own keys never get here: keyboard_pad drops them while a session claims
+               them (keyboard.c, finding 285). */
             if (text_input_key_allowed(keyboard_typed_of(place)) && (keyboard_position_down(place) || taps[place]))
                 down[keys[i]] = 1;
         }
@@ -1480,6 +1493,13 @@ void host_service_presence(uint32_t a0)
 static double pacing_period=1001.0/60000.0;
 static uint64_t pacing_field;
 static double jit_due, frame_began;           /* the next picture's due; when this frame's pad was read */
+/* The pictures' own pacing, for a game that runs unpaced (kernel.c: DHD_FRAME_CLOCK=1, the fixed
+   step a movie repeats on). Nothing else in the loop waits: the pictures do, and the frames
+   behind them wait for the GS (the queue, or the presenter's own thread), so the game goes on at
+   whatever rate it can and the screen keeps the field rate. The grid is the presenter's own last
+   picture (pace_show_at), never a field count: see pace_present_due. */
+static int present_paced;
+static double present_period = 1001.0 / 60000.0;  /* a paced fixed-step run's pictures: one a field */
 static double handed_due, handed_began, handed_time;  /* the same for the picture being handed on now, and when */
 static volatile float work_ms[WORK_SAMPLES];  /* pad read to picture ready, by the presenter */
 static volatile unsigned work_count;
@@ -1758,6 +1778,28 @@ static PaceHolds holds;
    worker): the holds in that time delayed it, and every picture queued behind it. */
 void pacing_waited(double from, double to) { pace_holds_waited(&holds, from, to); }
 
+/* DHD_PROFILE=1 (and DHD_PACING_LOG): every 5 s of pictures, what the screen got and what the game
+   ran — the two numbers a "the FPS is wrong" report has to tell apart (finding 285, revision 7:
+   the screen went unpaced while the run itself was fine, and neither number was printed anywhere).
+   The fields come from kernel_vsync_count, which kernel.c publishes each field. The presenter's
+   thread only. */
+extern uint64_t kernel_vsync_count;   /* kernel.c's, published each field (host_frame_context) */
+static unsigned long long stat_pictures;
+static double stat_held, stat_from;
+static int stat_on = -1;
+static void present_stats(double shown)
+{
+    if (stat_on < 0) stat_on = getenv("DHD_PROFILE") != NULL || getenv("DHD_PACING_LOG") != NULL;
+    if (!stat_on) return;
+    if (!stat_from) stat_from = shown;
+    stat_pictures++;
+    double span = shown - stat_from;
+    if (stat_pictures < 30 || span < 5.0) return;
+    fprintf(stderr, "pacing: %.2f pictures/s shown, %.2f fields/s run, %.2f ms held a picture (DHD_PROFILE)\n",
+            (double)stat_pictures / span, (double)kernel_vsync_count / span, stat_held / (double)stat_pictures);
+    stat_from = shown, stat_pictures = 0, stat_held = 0;
+}
+
 /* The presenter, just before it presents a picture pacing_handed described: notes how long the
    frame took, then waits for the due time, and at least a field after its last picture. */
 void pacing_present(double due, double began, double handed)
@@ -1778,15 +1820,22 @@ void pacing_present(double due, double began, double handed)
             work_count = i + 1;
         }
         int late = now > due;  /* this or the last picture late: a whole period after the last */
-        double spacing = FIELD_SECONDS - (late || last_late ? 0 : pacing_slack);
-        if (last_at + spacing > target) target = last_at + spacing;
-        if (target > now && target < now + 0.05) {
-            host_wait_wall(target);
+        /* A free-running run's pictures keep the field rate (present_period), not the game's own
+           frame rate setting: the fields are fixed and the screen shows them one at a time. */
+        double spacing = (present_paced ? present_period : FIELD_SECONDS) -
+                         (late || last_late ? 0 : pacing_slack);
+        /* Never sooner than `spacing` after the last picture (pace_grid.h), and never a stall
+           behind a due more than 50 ms away. */
+        double at = pace_show_at(target, now, last_at, spacing, 0.05);
+        stat_held += at > now ? at - now : 0;
+        if (at > now) {
+            host_wait_wall(at);
             double woke = host_wall_seconds();
-            pace_holds_hold(&holds, now, target, woke);  /* a late wake is the thread's, not the hold's */
+            pace_holds_hold(&holds, now, at, woke);  /* a late wake is the thread's, not the hold's */
         }
         last_at = host_wall_seconds();
         last_late = late;
+        present_stats(last_at);
         shown_due = 0;  /* a reader sees due 0 or all three values: the fences keep the order */
         __atomic_thread_fence(__ATOMIC_RELEASE);
         shown_at = last_at;
@@ -1980,9 +2029,15 @@ void input_latency_presented(void)
 }
 
 void host_pacing_config(double period, uint64_t field) { pacing_period=display_period(period); pacing_field=field; }
+void host_pacing_present(int on) { present_paced=on; }
+void host_pacing_present_period(double period) { present_period = display_period(period); }
 void host_pacing_handoff(int fresh)
 {
-    handed_due = fresh ? jit_due : 0;
+    /* A just-in-time frame's due is jit_due. A deterministic game's pictures take a place on a grid
+       of their own instead (0: the grid starts again from now, present at once). */
+    if (fresh) handed_due = jit_due;
+    else if (present_paced) handed_due = pace_present_due(host_wall_seconds());
+    else handed_due = 0;
     handed_began = frame_began;
     handed_time = fresh ? host_wall_seconds() : 0;  /* pacing_present's work samples */
     if (latency_on()) latency_handoff();

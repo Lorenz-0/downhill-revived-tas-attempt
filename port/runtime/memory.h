@@ -14,18 +14,31 @@
    data: the game keeps it in its RAM, and the state trace compares that RAM between builds
    (finding 205). [PS2_HLE_WINDOW, +0x800): the SIF RPC packets (sif.c). [PS2_DISC_RECENT,
    +PS2_DISC_RECENT_SIZE): the disc files the game looked up last (cdvd.c), which the host's crash
-   report prints (port/hle/host.c; finding 208). The game never reads the window's other bytes,
-   and the state trace does not hash it. */
+   report prints (port/hle/host.c; finding 208). [PS2_TAS_KEYS, +PS2_TAS_KEYS_SIZE): the keys a
+   TAS session claims (finding 285). The game never reads the window's other bytes, and the state
+   trace does not hash it. */
 #ifndef PS2_HLE_WINDOW  /* a unit test (test_sif.c) puts it inside its own small memory */
 #define PS2_HLE_WINDOW 0x70004000u
 #endif
 #define PS2_HLE_WINDOW_SIZE 0x4000u
 #define PS2_DISC_RECENT (PS2_HLE_WINDOW + 0x800u)
+/* The keys a TAS session claims: a bitmap by key place (the Windows vk of the US key), 32 bytes
+   for the 256 places. The module owns the session and writes it (tas.c); the host reads it, from
+   its own copy of keyboard.c, which is where a real key becomes a pad button. Published state,
+   never a call into the module: the host's copies of these units cannot reach the core's
+   (finding 285). */
+#define PS2_TAS_KEYS (PS2_HLE_WINDOW + 0xA00u)
+#define PS2_TAS_KEYS_SIZE 32u
 /* A count of lookups (u32, then 4 bytes free), then PS2_DISC_RECENT_SLOTS paths of
    PS2_DISC_RECENT_PATH bytes each (NUL-terminated); lookup n is in slot n % PS2_DISC_RECENT_SLOTS. */
 #define PS2_DISC_RECENT_SLOTS 8u
 #define PS2_DISC_RECENT_PATH 56u
 #define PS2_DISC_RECENT_SIZE (8u + PS2_DISC_RECENT_SLOTS * PS2_DISC_RECENT_PATH)
+/* The window's slots are laid out by hand: say so if one grows into another. */
+#if PS2_DISC_RECENT + PS2_DISC_RECENT_SIZE > PS2_TAS_KEYS \
+    || PS2_TAS_KEYS + PS2_TAS_KEYS_SIZE > PS2_HLE_WINDOW + PS2_HLE_WINDOW_SIZE
+#error "the HLE window's slots overlap (memory.h)"
+#endif
 /* The RAM from here up is also at its own PS2 addresses (and | 0x20000000, | 0x30000000): the
    game's data files are linked for where it loads them (0xA00000 up) and hold absolute PS2
    pointers. Below it Windows has its own memory before the program starts. */

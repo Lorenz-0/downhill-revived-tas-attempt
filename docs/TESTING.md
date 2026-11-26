@@ -99,6 +99,90 @@ after a version change before a live check.
 | `port/tools/audio_race_compare.py` | one race's sound in PCSX2 (an SPU2 capture hook) and in the port, compared by level and by voice (finding 133) |
 | `port/tools/rustgs.py test --target x86_64-pc-windows-msvc -- --test native_spirv` | the native and the exact renderer's SPIR-V for every pipeline stage (raster.wgsl for every raster key too), made as wgpu-hal's Vulkan backend makes it, with no texture passed into a function (Mali's r54 compiler crashes on that, finding 153) and none of the forms LLVM 9 turns into `llvm.usub.sat`, `llvm.uadd.sat` or a funnel shift (PowerVR Rogue's driver 1.13 crashes on them, finding 170). `DHD_SPIRV_OUT=DIR` keeps the `.spv` files; with `DHD_MALIOC` every stage is also compiled by malioc for `DHD_MALIOC_CORE` (default `Mali-G57`); `DHD_NATIVE_WGSL=FILE` (`DHD_RASTER_WGSL=FILE`) compares another native.wgsl (raster.wgsl) |
 
+## The TAS unit
+
+`port/hle/tas.c` (finding 285) has its own tests, on the host and without the game: a stub host
+drives the unit through the order the game itself uses, one field at a time —
+`tas_frame_advance_wait()` (kernel.c: the online gate and the pause), `++kernel_vsync_count`,
+`tas_pad()` / `tas_capture()` (pads_read), `tas_vsync()` (kernel.c: the recorded line). It links
+the real `keyboard.c` and drives the keys through `keyboard_key`, so the claim is tested where the
+game feels it: a claimed key reaches no pad button, an unclaimed one still does.
+
+It also builds the boundary as the port builds it (finding 285, revision 7): `keyboard.c` a second
+time with every public name prefixed `host_`, linked so that the *only* keyboard in the program is
+the host's — the TAS's keys reach the core through `host_service_keyboard_focused/key` and nothing
+else — and it measures the presentation pacing's arithmetic (`test_pace.c`) against the three ways
+a fixed-step run's pictures went uncapped: a 0 due, a due that runs away from the wall clock, and a
+spacing taken from the game's frame rate setting rather than the field's.
+
+The savestate's file (finding 286, `savestate.c`) is tested the same way and without a machine: three
+small blocks go through the same writer and reader the game uses and come back equal, the field
+travels with them, and four wrong files — another block size, another name, a short file, something
+that is not a savestate — are each refused whole, before one byte of the machine is written.
+
+    python port/tools/tas_selftest.py
+
+112 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
+unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
+(C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,
+and the four are claimed away from the game's layout only while a TAS session is live — the claim
+itself is checked in `test_keyboard.c`, where a claimed Space and C reach no pad button and the
+keys the session does not claim keep working); playback
+and recording offline through the order above, on player 1's pad only (a movie answers for no other
+pad, and a second pad's capture never reaches the file); the not-reproducible warning when the
+game steps by wall time (a stub for `port_delta_clock`); a released pause rebasing the game clock
+once; an online session dropping playback, recording and a pause before any pad of the field is
+read, with its file closed and its message said once; `DHD_TAS_PAUSE` and a `pause` command in an
+online session never holding the game, and a paused session entering one released rather than
+blocked; every way a movie is refused (columns, order, sign, overflow, a truncated line, a
+missing file) leaving nothing playable; the same for an allocation failure, by a second build
+linked with `--wrap=realloc`; and the recording's file closed by `quit`, by the end of the game
+and by a failed write. `tools/check.py quick` runs the suite, and so does the `checks` workflow.
+
+It is portable: the stub host's clock and sleep are the platform's own — POSIX `clock_gettime`
+(`CLOCK_MONOTONIC`) and `nanosleep`, Windows `QueryPerformanceCounter`/`QueryPerformanceFrequency`
+and `Sleep` — and the tests are the same on both. On Windows the harness builds with a clang/gcc
+driver over the Visual Studio toolchain (`clang`, or `DHD_CC`), from an x64 Native Tools prompt so
+the SDK's headers are found, and the driver's `.exe` output name is what the runner executes.
+Three notes on Windows coverage, since two families of checks vary by toolchain and report `SKIP`,
+never `PASS` (the summary counts them):
+
+- **The fault-injection builds need a linker that can interpose symbols** — GNU ld's `--wrap`.
+  MSVC's `link.exe` and `lld-link` have no equivalent, so the seven checks built on
+  `failmalloc.c`/`failflush.c` (allocation failure and a failed field write) report `SKIP` there;
+  every ordinary check still runs.
+- **Windows has no `/dev/full`**, so the header-write-failure pair reports `SKIP`; an
+  unopenable recording path (a directory) is still checked on both.
+- So Linux with gcc: 74 pass. Windows with clang: 65 pass, 9 skip.
+
+The runner prints a `note` line whenever it skips a family, naming the reason, and exits nonzero
+only for a real failure.
+
+### Playing a TAS run at 60
+
+`DHD_FRAME_CLOCK=1` makes the game step one fixed field at a time, which is what makes a movie
+repeat — and it used to present pictures as fast as the game could make them, so a TAS session ran
+at several hundred fields a second. `DHD_FRAME_PACE` (finding 285) paces the *pictures* instead of
+the game: the simulation stays unpaced and fixed-step, and the presenter hands each picture on at
+the field rate (59.94 Hz), which is what a player sees. `DHD_FRAME_PACE=0` turns it off (the old
+uncapped behaviour); headless and batch runs are never paced. What it does not change: the fields
+the game sees, the fields a movie names, the pad read point, and the wall-clock step — `paced` in
+`kernel.c` is deliberately *not* flipped for this, because it also turns on the delta-time step
+(`fps.c`) and the just-in-time frames, and either one would change the run a movie records.
+
+The TAS's keys work in the same session, with no control file: C, Space or 1 while paused release
+exactly one field (on the key's way down, so a held key and the OS's key repeats give one field
+each at most), and P pauses a running game or releases a paused one. They belong to the TAS while a
+session is live (`DHD_TAS_PLAY`/`DHD_TAS_RECORD`/`DHD_TAS_STEP`/`DHD_TAS_PAUSE`, or
+`DHD_TAS_KEYS=1` on its own), so in a TAS session Space is not the pedal and C is not the kick;
+`DHD_TAS_KEYS=0` keeps them the game's. Outside a TAS session nothing is claimed and the game's
+keys are exactly as they were.
+
+What it cannot show: the game itself. Whether the field the game consumes is the field the movie
+names, and whether a recorded run plays back to the same state, are the state-trace checks in
+"Goal and acceptance" of the finding, on a machine with the toolchain and the disc.
+
 ## The state trace
 
 The gate for a change that must not change the game (finding 081, the trace as it is since 205):
@@ -213,6 +297,22 @@ Menus and riding:
 | `DHD_STEP_PATTERN=a,b,...` | the delta-time clock's steps in fields, in this repeating order (each at least 60/`DHD_FPS` and at most 2), instead of one 60/`DHD_FPS` step an update: uneven frame times on the deterministic clock (`test_menu_rate.py`, finding 255) |
 | `DHD_RATE_WATCH=path`, `DHD_RATE_WATCH_WORDS=ADDR,...`, `DHD_RATE_WATCH_STOP=F` | after every update a line of the game's field counter, the update's step and up to 64 EE words (hex addresses); the game quits at field F (`port/hle/rate_audit.c`, finding 255) |
 | `DHD_HEADLESS=1` | no message boxes (a bad disc only logs), and no launcher (Linux smoke runs) |
+
+TAS (finding 285; `port/hle/tas.c`. Offline only: an online session refuses both directions at its
+first field):
+
+| Variable | What |
+|---|---|
+| `DHD_TAS_PLAY=FILE` | play a movie into player 1's pad (the main rider; pads 2-4 keep the device and the scripts): one field a line, 21 columns, `#` comments (tas.h has the format). A movie is played whole or not at all: a file that cannot be read, holds no field, or holds one line with the wrong number of columns, an out-of-order or repeated field, or a value out of range is refused whole (`play movie ... refused: playback off`, with the line and the reason before it) and the pads keep their other sources |
+| `DHD_TAS_RECORD=FILE` | record player 1's input as the game consumes it, a line a field, flushed as it goes and closed at the end (or on a failed write, with the complete fields before it kept) |
+| `DHD_TAS_PAUSE=1` | start paused. Needs `DHD_TAS_STEP`: without it the game runs unpaused and the log says so |
+| `DHD_TAS_STEP=FILE` | the control file, read once a field and deleted after every command: an empty file or `step` (one more field, while paused), `run` / `resume`, `pause`, `quit` (ends the game, as EXIT GAME's Yes). Unknown content is refused by name. A `step` written while running is ignored; a `pause` in an online session is refused |
+
+Write a run and play it back with `DHD_FRAME_CLOCK=1` both times. A TAS run takes its pad at the
+VBLANK and never through the just-in-time refresh (pad.c), so it plays one field behind a live
+player in both directions: that is what makes a recording and its playback the same run. Frame
+advance needs a host sleep that blocks, so it is off in the browser, whose `host_sleep_ms` is a
+no-op; the log says so when a pause is asked for there.
 
 Online:
 

@@ -68,6 +68,8 @@ pipelines.txt
 saves/
 *.log
 *.dmp
+savestate-trace.txt
+dhd-quicksave.state
 *.gs
 *.gs.xz
 *.wav

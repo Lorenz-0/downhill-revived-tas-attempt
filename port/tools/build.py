@@ -38,6 +38,10 @@ def main():
     p.add_argument('--target', help="build_host64.py's target (default its own: win-x64)")
     p.add_argument('-j', '--jobs', type=int, help='parallel core and native compiles')
     p.add_argument('--no-core', action='store_true', help='reuse build/wasm/dhd_core.wasm as it is')
+    p.add_argument('--dev', action='store_true', help="""a development loop: the game step builds the module
+        in chunks (--num-outputs 8), so a core change recompiles only the chunks that changed, in
+        parallel (finding 151). The same game, about 1.5 percent slower; a speed measurement or a
+        package uses the default""")
     a = p.parse_args(argv)
     if (a.package or a.web) and a.target:
         p.error('--target is for the native game (package_release.py takes --platform after --)')
@@ -51,7 +55,12 @@ def main():
     elif a.web:
         step('web', [py, ROOT / 'port' / 'web' / 'build.py', *rest])
     else:
-        step('game', [py, TOOLS / 'build_host64.py', WASM, *(['--target', a.target] if a.target else []), *(['--jobs', str(a.jobs)] if a.jobs else []), *rest])
+        chunks = ['--num-outputs', '8'] if a.dev and '--num-outputs' not in rest else []
+        if chunks:
+            print('== dev build: the module in chunks (%s), and only the chunks that changed recompile'
+                  % ' '.join(chunks), flush=True)
+        step('game', [py, TOOLS / 'build_host64.py', WASM, *(['--target', a.target] if a.target else []),
+                      *(['--jobs', str(a.jobs)] if a.jobs else []), *chunks, *rest])
 
 
 if __name__ == '__main__':

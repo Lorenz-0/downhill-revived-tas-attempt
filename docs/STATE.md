@@ -145,6 +145,27 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   its drawer `D_00287308`) takes a tap left or right of that row as Left / Right and on it as Cross;
   one with its own Left / Right slots (AUDIO / OTHER) takes a row tap as the cursor there and, for a
   row whose value is no number (a switch), Right, never Cross, its keep-and-close (finding 282).
+- **TAS** (`port/hle/tas.c`, finding 285): per-field input movies for player 1, the main rider
+  (`DHD_TAS_PLAY`, `DHD_TAS_RECORD`; pads 2-4 keep the device and the scripts), and pause/frame
+  advance (`DHD_TAS_PAUSE`, `DHD_TAS_STEP`) for building a run. Offline only, and only a real
+  `pads_online()` session refuses it — before any pad of that field is read, closing the recording
+  with the fields it has and never letting a pause hold the game; it takes the pad at the VBLANK,
+  the point a recording samples, so its input plays one field behind a hand player's in both
+  directions, and a released pause rebases the game clock so paused seconds cost no field. A movie
+  is played whole or not at all, and only repeats on the fixed step (`DHD_FRAME_CLOCK=1`; a paced
+  session is told so once). In a TAS session the keyboard is the TAS's: C, Space or 1 release one
+  field, P holds and releases the game (`DHD_TAS_KEYS=0` gives the keys back to the game), and
+  `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
+  simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
+  (`port/tools/tas_selftest.py`, docs/TESTING.md, 112 checks; POSIX and Windows timing, the
+  fault-injection checks skipped where the linker has no `--wrap`). A first cut of savestates (finding 286): Ctrl+5 saves 32.3 MB of
+  machine at a field boundary and Ctrl+8 loads it back in the same session (any session, off while online: the keys used to need a
+TAS one, which is how a report of "the game closes" was a log with no save in it at all), so a run can be retried from a field
+  instead of replayed; a load does not yet bring back the code's own live frames or the sound driver's
+  state. No rewind and no editor yet (finding 286 carries the plan and the measurements for both);
+  a movie is valid only for the boot that produced it. Validated by hand on Windows at `f612424`:
+  the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and hold; a
+  recorded run's trace equality with its playback is still untested.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's
   `disc_problem`: ISO 9660, SYSTEM.CNF booting SCUS_971.77, the whole declared volume), then the
   game's data check in the core. Desktop launcher uses a Rust file-reader FFI adapter; Android's
