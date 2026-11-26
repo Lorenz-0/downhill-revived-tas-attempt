@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "ps2asm.h"
+#include "savestate.h"
 #include "../runtime/portable.h"
 
 int hle_verbose;
@@ -934,6 +935,10 @@ static void vsync(void)
     }
     disc_check_field(kernel_vsync_count);  /* host-side work only: no game state */
     tas_vsync();
+    /* A savestate is taken and put back at this same quiet point (finding 286): every graphics work
+       the field started has been waited for, the VBLANK handlers have run, and the pad has been
+       refreshed — so what is copied is the state the trace hashes, plus the layers it leaves out. */
+    savestate_field();
     state_trace_field(kernel_vsync_count, next_vsync);  /* DHD_STATE_TRACE: the end of the field */
 }
 
@@ -1163,6 +1168,7 @@ void kernel_init(void)
     next_vsync = VSYNC_CYCLES;
     ps2.cop0[12] = 0x10001;  /* Status: EIE, IE */
     hle_verbose = host_getenv("DHD_LOG") != NULL;
+    savestate_init();
 }
 
 void kernel_run(void (*root)(void), uint32_t gp, uint32_t stack, uint32_t stack_size)
@@ -1207,4 +1213,70 @@ void kernel_dump(void)
     }
     for (int i = 1; i < MAX_SEMAS; i++) if (semas[i].used)
         fprintf(stderr, "  semaphore %d count=%d max=%d\n", i, semas[i].count, semas[i].max_count);
+}
+
+/* The kernel's own state, for a savestate (savestate.h, finding 286): what the game cannot see in its
+   RAM — the threads it runs, the semaphores and alarms it waits on, the interrupts it is told about —
+   plus the counters it reads. The threads' saved registers are here, not in RAM, and the trace leaves
+   them out on purpose ("wall-clock and host state are never hashed"); a restore needs them. */
+typedef struct {
+    Thread threads[MAX_THREADS];
+    Sema semas[MAX_SEMAS];
+    Alarm alarms[MAX_ALARMS];
+    HandlerEntry intc_handlers[MAX_HANDLERS], dmac_handlers[MAX_HANDLERS];
+    uint32_t intc_enabled, dmac_enabled, intc_stat;
+    int next_handler_id;
+    uint64_t next_vsync, field, gs_imr;
+    uint32_t vsync_flag_addr, vsync_csr_addr, heap_end;
+    int64_t order_back, order_front;
+    int current_index;   /* current, as a thread index (-1 while the idle loop runs) */
+} KernelState;
+
+uint32_t kernel_state_size(void) { return (uint32_t)sizeof(KernelState); }
+
+void kernel_state_save(void *dst)
+{
+    KernelState *k = dst;
+    memset(k, 0, sizeof *k);
+    memcpy(k->threads, threads, sizeof threads);
+    memcpy(k->semas, semas, sizeof semas);
+    memcpy(k->alarms, alarms, sizeof alarms);
+    memcpy(k->intc_handlers, intc_handlers, sizeof intc_handlers);
+    memcpy(k->dmac_handlers, dmac_handlers, sizeof dmac_handlers);
+    k->intc_enabled = intc_enabled;
+    k->dmac_enabled = dmac_enabled;
+    k->intc_stat = intc_stat;
+    k->next_handler_id = next_handler_id;
+    k->next_vsync = next_vsync;
+    k->field = kernel_vsync_count;
+    k->gs_imr = gs_imr;
+    k->vsync_flag_addr = vsync_flag_addr;
+    k->vsync_csr_addr = vsync_csr_addr;
+    k->heap_end = heap_end;
+    k->order_back = order_back;
+    k->order_front = order_front;
+    k->current_index = current ? (int)(current - threads) : -1;
+}
+
+void kernel_state_load(const void *src)
+{
+    const KernelState *k = src;
+    memcpy(threads, k->threads, sizeof threads);
+    memcpy(semas, k->semas, sizeof semas);
+    memcpy(alarms, k->alarms, sizeof alarms);
+    memcpy(intc_handlers, k->intc_handlers, sizeof intc_handlers);
+    memcpy(dmac_handlers, k->dmac_handlers, sizeof dmac_handlers);
+    intc_enabled = k->intc_enabled;
+    dmac_enabled = k->dmac_enabled;
+    intc_stat = k->intc_stat;
+    next_handler_id = k->next_handler_id;
+    next_vsync = k->next_vsync;
+    kernel_vsync_count = k->field;
+    gs_imr = k->gs_imr;
+    vsync_flag_addr = k->vsync_flag_addr;
+    vsync_csr_addr = k->vsync_csr_addr;
+    heap_end = k->heap_end;
+    order_back = k->order_back;
+    order_front = k->order_front;
+    current = k->current_index >= 0 && k->current_index < MAX_THREADS ? &threads[k->current_index] : NULL;
 }

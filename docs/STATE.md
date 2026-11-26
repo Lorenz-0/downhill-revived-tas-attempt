@@ -157,9 +157,11 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   field, P holds and releases the game (`DHD_TAS_KEYS=0` gives the keys back to the game), and
   `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
   simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
-  (`port/tools/tas_selftest.py`, docs/TESTING.md, 108 checks; POSIX and Windows timing, the
-  fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet (finding 286 works out what one would need,
-  and implements nothing);
+  (`port/tools/tas_selftest.py`, docs/TESTING.md, 112 checks; POSIX and Windows timing, the
+  fault-injection checks skipped where the linker has no `--wrap`). A first cut of savestates (finding 286): F5 saves the
+  machine at a field boundary and F8 loads it back in the same session, so a run can be retried from a field
+  instead of replayed; a load does not yet bring back the code's own live frames or the sound driver's
+  state. No rewind and no editor yet (finding 286 carries the plan and the measurements for both);
   a movie is valid only for the boot that produced it. Validated by hand on Windows at `f612424`:
   the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and hold; a
   recorded run's trace equality with its playback is still untested.

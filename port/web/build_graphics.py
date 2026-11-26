@@ -112,7 +112,7 @@ defined=[n for n in exports if any(re.search(r'^[\w ]+'+n+r'\s*\([^;]*\{',f.read
 # The guest addresses these take: folded to canonical RAM here (the same map as postlink.py's
 # accesses and the JS hosts' fold), so the reactor itself needs no adapted memory accesses.
 GUEST_ARGS={'host_service_vif_feed':[1],'host_service_graphics_feed':[1],'host_service_gs_read_image':[0],
-            'host_service_gs_defer_read_image':[0],'host_service_gs_trace_pop':[0],'host_service_gs_snapshot':[0],
+            'host_service_gs_defer_read_image':[0],'host_service_gs_trace_pop':[0],'host_service_gs_snapshot':[0],'host_service_gs_restore':[0],
             'host_vu1_snapshot':[0],'host_vu1_file':[0]}
 FOLD='''static inline unsigned web_fold(unsigned a) {
     unsigned low = a & 0x1fffffffu;

@@ -271,6 +271,8 @@ void host_service_gs_trace_begin(void);
 uint32_t host_service_gs_trace_size(void);
 void host_service_gs_trace_pop(uint32_t address);
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes);
+/* ... and back, for a savestate (finding 286): the same prefix, written into the live GS. */
+void host_service_gs_restore(uint32_t address, uint32_t bytes);
 void host_console_write(uint32_t address, uint32_t bytes);
 
 /* Wall-clock presentation state stays native. These contain no guest pointers. */

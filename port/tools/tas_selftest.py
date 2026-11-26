@@ -208,6 +208,25 @@ def main():
         check('the pictures keep the field rate however fast the run is', False,
               'test_pace.c did not build: ' + (p.stderr or p.stdout)[-300:])
 
+    # 0c. the savestate's file (finding 286, savestate.c): the blocks come back as they went, and a
+    #     file that is not this state is refused whole — before one byte of the machine is written
+    ss = os.path.join(BUILD, 'test_savestate')
+    runtime_inc = ['-I' + os.path.join(ROOT, 'port', 'runtime')]   # savestate.c includes ps2asm.h
+    p = subprocess.run([cc] + CFLAGS + INCLUDES + runtime_inc + ['-o', ss, os.path.join(SRC, 'test_savestate.c'),
+                                                   os.path.join('port/hle/savestate.c')] + LIBS,
+                       capture_output=True, text=True)
+    if p.returncode == 0 and os.path.exists(built(ss)):
+        rc, out, err = run(built(ss), [], {})
+        check('a savestate writes and reads its blocks back', 'roundtrip wrote=1 read=1 equal=1' in out, out + err)
+        check('and carries the field it belongs to', 'field=4242 field-ok=1' in out, out + err)
+        check('a file of another size, another block or another length is refused whole',
+              'refusals size=1 name=1 short=1 magic=1' in out, out + err)
+        check('a savestate is refused before the machine is touched',
+              'refused whole' in err or not err, out + err)
+    else:
+        check('a savestate writes and reads its blocks back', False,
+              'test_savestate.c did not build: ' + (p.stderr or p.stdout)[-300:])
+
     # 0. the stub host's clock: monotonic, and a sleep that really sleeps (tas.c's pause gate
     #    times a 4 ms sleep to decide whether frame advance can hold at all)
     rc, out, err = run(plain, ['clock-contract'], {})

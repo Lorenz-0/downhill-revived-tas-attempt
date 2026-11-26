@@ -115,9 +115,14 @@ else — and it measures the presentation pacing's arithmetic (`test_pace.c`) ag
 a fixed-step run's pictures went uncapped: a 0 due, a due that runs away from the wall clock, and a
 spacing taken from the game's frame rate setting rather than the field's.
 
+The savestate's file (finding 286, `savestate.c`) is tested the same way and without a machine: three
+small blocks go through the same writer and reader the game uses and come back equal, the field
+travels with them, and four wrong files — another block size, another name, a short file, something
+that is not a savestate — are each refused whole, before one byte of the machine is written.
+
     python port/tools/tas_selftest.py
 
-108 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+112 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
 unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
 (C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,

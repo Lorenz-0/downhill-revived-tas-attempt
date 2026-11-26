@@ -170,15 +170,63 @@ one run and one diff away, and it decides how much of this is a weekend and how 
    movie is (`codeids.py` identities make the *comparison* portable; a restore needs the addresses).
 6. **Online**: refused, as the TAS already refuses it, and for the same reason.
 
+## Stage 1, first cut: save and load in a session (this commit)
+
+The authorisation for "save anywhere / load anywhere" arrived, so the first cut is in the tree:
+`port/hle/savestate.c` and its header, a state function pair in `kernel.c` and `pad.c`, and one new
+host service (`host_service_gs_restore`, the exact inverse of the snapshot `gs.c` has given the trace
+all along).
+
+**What a savestate contains:** RAM, the EE thread stacks, the scratchpad, the HLE window, VU0/VU1's
+memory, the CPU's registers (block `cpu`), the whole GS prefix (4 MiB of VRAM and every register,
+through the existing snapshot service), the kernel's own state (256 threads with their saved
+registers, 512 semaphores, the alarms, the interrupt handlers and counters, the fields counted) and
+padman's. 52.3 MB, written and read in 24 MiB/s-ish memcpys; the whole file is checked — magic,
+version, block count, every block's name and size, and the file's own length — **before one byte of
+the machine is written**, so a file that is not this state is refused whole.
+
+**How it is used:** F5 saves to `dhd-quicksave.state` and F8 loads it back, live in a TAS session (a
+movie, a control file, `DHD_TAS_KEYS`, or a savestate variable of its own), so an ordinary player's
+F5/F8 stay the game's. For a scripted run, `DHD_SAVE_STATE=<file>` (with `DHD_SAVE_FIELD=<n>` to
+choose the field) and `DHD_LOAD_STATE=<file>`. Both are taken and applied at the field boundary the
+state trace hashes at, after the graphics work the field started has been waited for.
+
+**What is knowingly missing, in the order it will show:**
+
+- **the live frames** — the recompiled code's own C frames and each fibre's native stack. They are
+  host memory a fresh boot has not got, which is why a load is supported *within the session that
+  saved*: F5, play, F8, retry — the rerecording loop, which is what a savestate is for here. A file
+  loaded into a fresh boot will restore the machine and then resume on the new process's frames: it
+  may work, it may diverge, and the log says so instead of pretending.
+- **the renderer's caches and the audio device**: the GS is back, but the native renderer may hold a
+  stale texture or pipeline for a field until the game redraws; the sound driver's own state is not
+  yet in the file (the voices restart). Both are named in the load's log line.
+- **open files and the disc's position** are left alone (they are the same files).
+- **the field counter is restored with the state**, so a trace comparison of "load at N and run 600
+  fields" against "run to N+600" is a straight diff (`DHD_STATE_TRACE`, `state_diff.py`).
+
+**Verified here:** `tas_selftest.py` **112 checks, 0 failed** — four new, from `test_savestate.c`,
+which drives the same reader and writer the game does over three small blocks and refuses four wrong
+files (another size, another name, a short file, not a savestate) while proving the targets are
+untouched. Compiles clean with `-Wall -Wextra` on the host and for `wasm32` (`savestate.c`,
+`kernel.c`, `pad.c`); the browser's graphics reactor folds the new guest address
+(`build_graphics.py`).
+
+**Not verified here, and it is the whole question:** whether a load continues the same run. That
+needs the game, and the honest test is one sentence long — trace a run, save at a field, load, run
+600 fields, and diff the two traces. The layers most likely to show up in that diff are the two
+above, and each has a next step ready (native stacks through a host service; the sound driver's
+tables, unit by unit as `kernel.c` and `pad.c` did).
+
 ## Decision requested
 
 Nothing here is built. Three stages, each needing its own authorisation:
 
 - **Stage 0 — measurement only (throwaway).** E1, E2 and the E3 bisection behind `DHD_STATE_LOAD`,
   in the port tree, not shipped, no UI. Output: the numbers, the layer list, and a yes or no.
-- **Stage 1 — save and load (product).** `DHD_TAS_SAVE`/`DHD_TAS_LOAD` at the trace point, same
-  build, same process, with the refusal rules above; then rerecording exists: load N, play new
-  inputs, the movie's tail is rewritten from N.
+- **Stage 1 — save and load (product).** Done as the first cut above (F5/F8 and
+  `DHD_SAVE_STATE`/`DHD_LOAD_STATE`); what remains is what its first run's diff says, and the
+  sound driver's state if audio matters to the loop.
 - **Stage 2 — rewind.** The checkpoint ring and replay behind it, once Stage 1's equality holds.
 
 Recommendation: Stage 0 first. It is small, it answers the only questions that matter, and it produces

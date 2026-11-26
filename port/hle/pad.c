@@ -9,6 +9,7 @@
    always four, each connected while its player has a controller (pads_live). Player i's input
    comes from online.c's pads_read: the host's controller or a script (online too: the race is
    this PC's own, the others' riders are puppets). */
+#include "savestate.h"
 #include "hle.h"
 #include "tas.h"
 #include "../include/fps.h"
@@ -264,4 +265,27 @@ int port_input_stamp(int legacy_field)
 {
     extern unsigned int D_0029E10C;
     return port_delta_clock() ? (int)D_0029E10C : legacy_field;
+}
+
+/* padman's own state, for a savestate (savestate.h, finding 286). The frames themselves are in EE
+   memory (Pad::area), which a savestate already carries; this is the bookkeeping around them. */
+typedef struct {
+    Pad pads[2][4];
+    uint32_t frame_counter;
+} PadState;
+
+uint32_t pad_state_size(void) { return (uint32_t)sizeof(PadState); }
+
+void pad_state_save(void *dst)
+{
+    PadState *s = dst;
+    memcpy(s->pads, pads, sizeof pads);
+    s->frame_counter = frame_counter;
+}
+
+void pad_state_load(const void *src)
+{
+    const PadState *s = src;
+    memcpy(pads, s->pads, sizeof pads);
+    frame_counter = s->frame_counter;
 }
