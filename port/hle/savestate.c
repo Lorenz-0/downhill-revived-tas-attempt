@@ -122,6 +122,10 @@ void savestate_init(void)
     if ((p = host_getenv("DHD_LOAD_STATE")) && *p) snprintf(load_path, sizeof load_path, "%s", p);
     if ((p = host_getenv("DHD_SAVE_FIELD")) && *p) save_field = (unsigned long)strtoul(p, NULL, 0);
     snprintf(quick_path, sizeof quick_path, "%s", "dhd-quicksave.state");
+    /* Where the keys' file goes: the game's own folder unless DHD_QUICKSAVE names another, which
+       is how a save is put on a local disk when the game runs from a network or virtual one. */
+    if ((p = host_getenv("DHD_QUICKSAVE")) && *p)
+        snprintf(quick_path, sizeof quick_path, "%s", p);
     if (save_path[0]) save_pending = 1;
     if (load_path[0]) load_pending = 1;
     if (save_path[0]) hle_log("savestate: save to '%s' at %s (DHD_SAVE_STATE)\n", save_path,
@@ -181,19 +185,33 @@ static void log_block(const char *what, const char *name, uint32_t bytes)
     hle_log("savestate: %s %-7s %u bytes\n", what, name, (unsigned)bytes);
 }
 
-/* One block's bytes, with a breadcrumb before each: a run that ends inside one says which. */
+/* One block's bytes, a megabyte to a piece, with a breadcrumb before each piece of a big one: a
+   run that ends inside a block says which, and how far into it. A single 32 MiB fwrite is the one
+   call this unit has seen hang, on Windows, in a race (finding 286); a piece bounds each call and
+   names the piece that did not come back. */
+enum { SS_PIECE = 1 << 20 };
 static int put(FILE *f, const SsBlock *b)
 {
     breadcrumb("save: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("write", b->name, b->bytes);
-    return fwrite(b->data, 1, b->bytes, f) == b->bytes;
+    for (uint32_t at = 0; at < b->bytes; at += SS_PIECE) {
+        uint32_t n = b->bytes - at < SS_PIECE ? b->bytes - at : SS_PIECE;
+        if (b->bytes > SS_PIECE) breadcrumb("save: %s %u of %u MiB", b->name, at >> 20, b->bytes >> 20);
+        if (fwrite((uint8_t *)b->data + at, 1, n, f) != n) return 0;
+    }
+    return 1;
 }
 
 static int get(FILE *f, const SsBlock *b)
 {
     breadcrumb("load: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("read", b->name, b->bytes);
-    return fread(b->data, 1, b->bytes, f) == b->bytes;
+    for (uint32_t at = 0; at < b->bytes; at += SS_PIECE) {
+        uint32_t n = b->bytes - at < SS_PIECE ? b->bytes - at : SS_PIECE;
+        if (b->bytes > SS_PIECE) breadcrumb("load: %s %u of %u MiB", b->name, at >> 20, b->bytes >> 20);
+        if (fread((uint8_t *)b->data + at, 1, n, f) != n) return 0;
+    }
+    return 1;
 }
 
 int savestate_write_file(const char *path, const SsBlock *blocks, int count, uint32_t field)

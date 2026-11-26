@@ -563,6 +563,17 @@ def main():
         # rustc's list for the library (checked by rustgs against the target's allow-list)
         rust_libs = [x for x in report['native_static_libs'] if x != '-lc']
         exe = out/t.exe
+        # Windows will not replace an executable that is running: a game left open (a freeze, a
+        # window closed while a thread still lives) makes the link fail with lld's bare "permission
+        # denied", which names no cause. Say which file it is and how to free it.
+        try:
+            with open(exe, 'ab'):
+                pass
+        except PermissionError:
+            sys.exit(f'build_host64.py: {exe} is in use, so it cannot be replaced — close the game '
+                     f'(taskkill /F /IM {exe.name}) and build again')
+        except OSError:
+            pass
         if t.windows:
             # dxgi.lib: gpu_rust.c's adapter choice and video memory (CreateDXGIFactory1)
             libs = ['onecore.lib','user32.lib','gdi32.lib',

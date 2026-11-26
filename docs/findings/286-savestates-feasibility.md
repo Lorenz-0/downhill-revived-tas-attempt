@@ -230,6 +230,19 @@ scratchpad, the HLE window, VU memory, the CPU, the kernel and padman, ≈32.3 M
 save path at all but the file itself. The GS comes back when there is a point in the field where the
 workers are quiet by construction, not when one can be waited for.
 
+**The race save's next log says it is the RAM write.** With the GS and its wait gone, the same
+report came back: `savestate: write ram 33554432 bytes`, then `freeze: no field for 5 s at field
+7084: menu 9 phase 1` — `0x29DED8` is 9 in a race and the phase 1 is the countdown (finding 024), so
+this is a race, at the first block, with no trap this time but a hang. The same 32 MiB write in the
+main menu had already worked (field 1602), and a menu save does not differ from a race save in
+anything else this unit does. So: the write is now a megabyte to a piece, with a breadcrumb per
+piece, which says how far into RAM a run got (and bounds each `fwrite`); `DHD_QUICKSAVE=<path>` puts
+the file elsewhere, so a save on a local disk rules the game's own drive out (a network or virtual
+one, the one the report's build folder is on); and the game thread's frames in the freeze dump want
+naming with `port/tools/host64_rva.py <map> <log>`, which says whether the hang is in the file write
+or in a wait. The TAS keys, separately, were never broken: they are the game's unless a session
+claims them (mission 7's rule), and the first field now says so — `DHD_TAS_KEYS=1` claims them.
+
 **What the first two logs a report came with actually contained** (worth keeping, because between
 them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
 closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line

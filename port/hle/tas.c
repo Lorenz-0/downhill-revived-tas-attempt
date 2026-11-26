@@ -457,6 +457,11 @@ void tas_init(void)
     if (keys_on)
         tas_log("keys: C, Space or 1 steps a field and holds the game, P pauses and releases it "
                 "(DHD_TAS_KEYS=0 turns them off)");
+    else
+        /* Silent before, which read as broken: the keys are the game's unless a session claims them
+           (mission 7's rule), and a player practising alone has no session. */
+        tas_log("keys: off, so C, Space, 1 and P are the game's (DHD_TAS_KEYS=1 claims them; a movie, "
+                "a control file or DHD_TAS_PAUSE does too)");
     tas_keys_publish();
     if (play_path) playing = load_movie(play_path);
     if (record_path) record_open(record_path);
