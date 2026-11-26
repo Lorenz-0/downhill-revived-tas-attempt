@@ -203,6 +203,22 @@ stand on:**
 The keys are **Ctrl+5** (save) and **Ctrl+8** (load) rather than F5/F8, so a plain press of a key the
 game may want stays the game's, and the edge is only taken with Ctrl held.
 
+**What the first two logs a report came with actually contained** (worth keeping, because between
+them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
+closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line
+anywhere; the other was nine lines long, `Downhill Revived: No disc image is chosen.` and `end:
+closing (code 0)` — a launch with no disc chosen, the game never booted, so the module (and this
+unit with it) never ran. Neither was a crash, and neither is the report's crash: the file a crash
+writes is `dhd.log` **of that run**, and its own line first (`Downhill Revived 0.8.13 (dhd-port …
+<hash>)`, a different hash every build).
+
+So this unit also keeps `savestate-trace.txt` beside the game: one line per action, the file opened
+and closed per line, so the last line is on disk before anything can end the process. `boot: …`
+means the build has this and reached the first field; a `key: Ctrl+5` line without a `save:` line
+means the key was read; `save: block gs 4200032 bytes` with nothing after it means the process ended
+inside the GS stream; no `boot:` line at all means the exe is not this build (or the game never
+started).
+
 **And the third "the game dies" report was not a die at all.** Its log ended
 `game: the front end runs`, `exit game: chosen in the main menu`, `end: closing (code 0)` and the
 whole session's `perf:` line after it — the port's own graceful exit, with no savestate line

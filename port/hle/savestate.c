@@ -25,6 +25,7 @@
    The keys save and load in any session, movie or not (a player practising a track has no movie
    either), and are off while an online race is: that is the TAS's rule and this is the TAS's state.
    The first log line says the keys are there, so a report's log says whether the build has them. */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,25 @@
 
 extern ps2_cpu ps2;
 extern uint64_t kernel_vsync_count;   /* kernel.c: the field a savestate belongs to */
+
+/* A breadcrumb beside the log: dhd.log is a whole session and a report may arrive with another
+   run's (two did), so every action here also appends one line to savestate-trace.txt, opened and
+   closed per line so that the last line is on disk before anything can end the process. The last
+   line a run wrote is where it died, or how far it got before the key was ever read.
+   Not in the game's log except first-time block lines: at 165 fields/s a save's eight lines per
+   press belong in this file, not in dhd.log. */
+#define SS_TRACE "savestate-trace.txt"
+static void breadcrumb(const char *fmt, ...)
+{
+    va_list ap;
+    FILE *f = fopen(SS_TRACE, "a");
+    if (!f) return;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
 
 /* The format. A block is a name and its bytes, in a fixed order: the reader checks every name and
    size, and the file's own length, before it writes one byte of the machine. */
@@ -76,6 +96,7 @@ static int online_blocks(void)
         online_said = 1;
         hle_log("savestate: Ctrl+5 and Ctrl+8 off: an online session (a savestate is the TAS's, and an "
                 "online race is not\n");
+        breadcrumb("keys: off, an online session");
     }
     return 1;
 }
@@ -108,6 +129,7 @@ void savestate_init(void)
                               save_field ? "its field" : "the first field");
     if (load_path[0]) hle_log("savestate: load '%s' at the first field (DHD_LOAD_STATE; a file from a "
                               "fresh boot cannot bring the code's live frames back — finding 286)\n", load_path);
+    breadcrumb("boot: savestates on; Ctrl+5 saves to %s, Ctrl+8 loads it back", quick_path);
     /* Always said: the log then shows which build a report came from, and the keys' names. */
     hle_log("savestate: Ctrl+5 saves to '%s' and Ctrl+8 loads it back, in any session (both are off "
             "while an online race is; a savestate is the TAS's, finding 286)\n", quick_path);
@@ -163,6 +185,7 @@ static void log_block(const char *what, const char *name, uint32_t bytes)
 /* One block's bytes, either straight from its memory or the GS prefix a piece at a time. */
 static int put(FILE *f, const SsBlock *b)
 {
+    breadcrumb("save: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("write", b->name, b->bytes);
     if (!b->chunked) return fwrite(b->data, 1, b->bytes, f) == b->bytes;
     for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
@@ -175,6 +198,7 @@ static int put(FILE *f, const SsBlock *b)
 
 static int get(FILE *f, const SsBlock *b)
 {
+    breadcrumb("load: block %s %u bytes", b->name, (unsigned)b->bytes);
     log_block("read", b->name, b->bytes);
     if (!b->chunked) return fread(b->data, 1, b->bytes, f) == b->bytes;
     for (uint32_t at = 0; at < b->bytes; at += SS_CHUNK) {
@@ -220,9 +244,18 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
 int savestate_save(const char *path)
 {
     SsBlock b[SS_MAX_BLOCKS];
+    breadcrumb("save: asked at field %llu (%s)", (unsigned long long)kernel_vsync_count, path);
     int n = collect(b);
-    if (!n) return 0;
-    if (!savestate_write_file(path, b, n, (uint32_t)kernel_vsync_count)) return 0;
+    if (!n) {
+        breadcrumb("save: refused, nothing collected");
+        return 0;
+    }
+    breadcrumb("save: %d blocks, %.1f MB", n, megabytes(b, n));
+    if (!savestate_write_file(path, b, n, (uint32_t)kernel_vsync_count)) {
+        breadcrumb("save: the file was not written");
+        return 0;
+    }
+    breadcrumb("save: done, %.1f MB", megabytes(b, n));
     said_blocks = 1;
     hle_log("savestate: saved '%s' at field %llu, %.1f MB (ram, scratch, the HLE window, VU, the CPU, "
             "the GS, the kernel's threads and padman; not the EE stacks or the live frames — finding "
@@ -288,10 +321,18 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
 int savestate_load(const char *path)
 {
     SsBlock b[SS_MAX_BLOCKS];
+    breadcrumb("load: asked at field %llu (%s)", (unsigned long long)kernel_vsync_count, path);
     int n = collect(b);
     uint32_t field = 0;
-    if (!n) return 0;
-    if (!savestate_read_file(path, b, n, &field)) return 0;
+    if (!n) {
+        breadcrumb("load: refused, nothing collected");
+        return 0;
+    }
+    if (!savestate_read_file(path, b, n, &field)) {
+        breadcrumb("load: the file was refused or ended early");
+        return 0;
+    }
+    breadcrumb("load: %d blocks back, saved at field %u", n, (unsigned)field);
     /* The GS is back already (its block is written as it is read). What the units hold outside guest
        memory goes back now, then the clock is rebased: the time between the save and the load is no
        game time. */
@@ -332,6 +373,9 @@ void savestate_field(void)
     }
     int edge5 = k5 && !(key_last & 1), edge8 = k8 && !(key_last & 2);
     key_last = (k5 ? 1 : 0) | (k8 ? 2 : 0);
+    if (edge5 || edge8)
+        breadcrumb("key: %s at field %llu", edge5 ? "Ctrl+5" : "Ctrl+8",
+                   (unsigned long long)kernel_vsync_count);
     if (edge5) savestate_save(quick_path);
     if (edge8) savestate_load(quick_path);
 }
