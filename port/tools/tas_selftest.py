@@ -223,6 +223,38 @@ def main():
     hung, out, err = run_blocking(plain, ['nopause'], {})
     check('a run that never pauses never rebases', 'rebases=0' in out, out + err)
 
+    # 4e. the TAS's own keys (finding 285): C, Space and 1 release one field, P holds and releases
+    #     the game, a held key gives nothing more, and the keys belong to the TAS while it runs
+    rc, out, err = run(plain, ['claim'], {'DHD_TAS_KEYS': '1'})
+    check('a TAS session claims its four keys', 'claimed C=1 space=1 one=1 P=1 other=0' in out, out + err)
+    rc, out, err = run(plain, ['claim'], {'DHD_TAS_RECORD': os.path.join(WORK, 'claim.movie')})
+    check('a recording session claims them too', 'claimed C=1 space=1 one=1 P=1' in out, out + err)
+    rc, out, err = run(plain, ['claim'], {'DHD_TAS_KEYS': '0'})
+    check('DHD_TAS_KEYS=0 leaves the keys to the game', 'claimed C=0 space=0 one=0 P=0 other=0' in out,
+          out + err)
+    rc, out, err = run(plain, ['claim'], {})
+    check('a run with no TAS at all claims no key', 'claimed C=0 space=0 one=0 P=0 other=0' in out, out + err)
+
+    rc, out, err = run(plain, ['keys'], {'DHD_TAS_KEYS': '1'})
+    check('P pauses a running game', 'k-press-p fields=1 paused=1' in out, out + err)
+    check('C steps exactly one field', 'k-step-c fields=2 paused=1' in out, out + err)
+    check('a frame-advance key held down steps nothing more',
+          'held_pumps=31' in out and 'k-after-held fields=3 paused=0' in out, out + err)
+    check('P releases the pause the keys hold', 'k-end fields=8 paused=0' in out, out + err)
+    check('Space steps exactly one field', 'k-step-space fields=6 paused=1' in out, out + err)
+    check('1 steps exactly one field', 'k-step-one fields=7 paused=1' in out, out + err)
+    check('the keys need no control file', 'needs DHD_TAS_STEP' not in err, err)
+    check('the pause says which keys release it', 'paused (P: C, Space or 1 steps a field' in err, err)
+    check('the keys are live only in a session, and say so', err.count('keys: C, Space or 1 steps') == 1, err)
+
+    # the keys are a release channel, so a paused start no longer needs the control file
+    hung, out, err = run_blocking(plain, ['nopause'], {'DHD_TAS_PAUSE': '1', 'DHD_TAS_KEYS': '1'})
+    check('the keys alone can hold a paused start', hung and 'paused at the start; C, Space or 1' in err,
+          out + err)
+    hung, out, err = run_blocking(plain, ['nopause'], {'DHD_TAS_PAUSE': '1'})
+    check('without a file or the keys a paused start still runs unpaused',
+          (not hung) and 'needs DHD_TAS_STEP' in err, out + err)
+
     # 5. online playback refusal, before any pad of the field is consumed
     rc, out, err = run(plain, ['online-play'], {'DHD_TAS_PLAY': movie})
     check('online: playback refused', 'online1 playing=0' in out, out + err)

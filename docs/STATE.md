@@ -153,7 +153,10 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   the point a recording samples, so its input plays one field behind a hand player's in both
   directions, and a released pause rebases the game clock so paused seconds cost no field. A movie
   is played whole or not at all, and only repeats on the fixed step (`DHD_FRAME_CLOCK=1`; a paced
-  session is told so once). Its tests run on the host without the game
+  session is told so once). In a TAS session the keyboard is the TAS's: C, Space or 1 release one
+  field, P holds and releases the game (`DHD_TAS_KEYS=0` gives the keys back to the game), and
+  `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
+  simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
   (`port/tools/tas_selftest.py`, docs/TESTING.md, 74 checks; POSIX and Windows timing, the
   fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet;
   a movie is valid only for the boot that produced it.

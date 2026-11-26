@@ -151,7 +151,8 @@ def run_native(args, directory, script, events, manifest, compare):
     env.update(DHD_ISO=iso, DHD_FRAME_CLOCK='1', DHD_AUTOPAD_FRAMES=compare.frame_script(events),
                DHD_LOG='1', DHD_SKIP_MOVIES='1', DHD_MEMCARD='0', DHD_SND_OFF='1', DHD_SCREENSHOT=str(directory / 'native'),
                DHD_CAPTURE_FRAME=str(compare.field_at(args.at)),
-               DHD_CAPTURE_FRAME_INTERVAL=str(compare.field_at(args.interval)))
+               DHD_CAPTURE_FRAME_INTERVAL=str(compare.field_at(args.interval)),
+               DHD_FRAME_PACE='0')  # a comparison run: pictures are not paced (finding 285)
     count = math.floor((args.until - args.at)/args.interval + 1e-9)+1
     manifest.update(port_exe_sha256=digest, virtual_clock=True, pad_script=script,
                     pad_frames=compare.frame_script(events), native_requested_captures=count)

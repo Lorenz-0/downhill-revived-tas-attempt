@@ -739,6 +739,12 @@ static int paced;
    gives host_wall_seconds real time). Deterministic runs (DHD_FRAME_CLOCK=1 alone) keep the
    nominal step. */
 static int wall_steps;
+/* The pictures' pacing while the game runs unpaced (DHD_FRAME_CLOCK=1 and DHD_FRAME_PACE,
+   kernel_init): host.c's pacing_present holds each picture to a grid of the field rate, so a
+   deterministic run keeps the screen at about 60 fields a second without the game's step ever
+   becoming wall time. Never the just-in-time frames: those move the pad read, and a movie's
+   field must be the field the movie names. */
+static int present_pace;
 static PaceGrid pace_grid;
 
 /* An online race waited `seconds` for the other players: the following frames keep their spacing
@@ -1108,6 +1114,24 @@ void kernel_init(void)
     const char *fps_wall = host_getenv("DHD_FPS_WALL");
     wall_steps = paced || (fps_wall && atoi(fps_wall) == 1);
     port_clock_wall(wall_steps);
+    /* Presentation pacing (finding 285's TAS). A deterministic run is unpaced by design: the game
+       steps one fixed field at a time, as fast as it can make them, which is what makes the same
+       movie the same run and a bench fast. On a window that also handed the pictures on as fast
+       as they came. `paced` is not the switch to flip for that: it also turns fps.c's wall-clock
+       steps on (the game would step by the time the field took) and the just-in-time frames, and
+       either one changes the run a movie records. So the pictures get a grid of their own in the
+       presenter instead (host.c pacing_present): the game goes on unpaced, the screen keeps the
+       field rate. DHD_FRAME_PACE=0 hands the pictures on at once, as before; a headless or batch
+       run (no pictures at all, or a throughput measurement) is never paced. */
+    const char *pace_env = host_getenv("DHD_FRAME_PACE");
+    int pace_off = pace_env && *pace_env && !atoi(pace_env);
+    int batch = host_getenv("DHD_HEADLESS") || host_getenv("DHD_BENCH") || host_getenv("DHD_BENCH_EXIT") ||
+                host_getenv("DHD_STATE_TRACE");
+    present_pace = !paced && !pace_off && !batch;
+    host_pacing_present(present_pace);
+    if (present_pace)
+        hle_log("pacing: the fixed step runs unpaced (a movie repeats); the pictures keep the field "
+                "rate (DHD_FRAME_PACE=0 presents them at once)\n");
     host_service_host_init();
     host_service_gs_reset();
     state_trace_init();  /* after gs_reset, which clears the GS struct; no-op unless DHD_STATE_TRACE */

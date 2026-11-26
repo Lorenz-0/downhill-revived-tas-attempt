@@ -201,7 +201,8 @@ care about, and the TAS is written against these facts:
 
 `port/tools/tas_selftest.py` (and `docs/TESTING.md`, "The TAS unit") builds `tas.c` into a stub
 host and drives it through the game's field order, one field at a time, with `pads_online()`,
-`host_sleep_ms()`, the game clock and the window close under the test's control. 74 checks, 0
+`host_sleep_ms()`, the game clock, the keyboard's four TAS keys and the window close under the
+test's control. 89 checks, 0
 failed, seconds to run, a C compiler and nothing else; two of them link a fault-injection build (`--wrap=realloc`,
 the movie chunk; `--wrap=fflush`, the third field write) and are skipped where the linker has no
 `--wrap`. They cover, in the order the review asked for them: offline playback surviving the first
@@ -226,6 +227,42 @@ sleep that does not block would silently turn the unit's frame advance off), and
 same on both. Two families report SKIP rather than PASS where the toolchain cannot support them,
 and the runner says so: the fault-injection builds need GNU ld's `--wrap` (MSVC's `link.exe` and
 `lld-link` have no equivalent — seven checks), and Windows has no `/dev/full` (two checks).
+
+## Controls and the screen
+
+Two things a person at the keyboard could not do, and what each one cost to make possible without
+touching the run a movie records.
+
+**The TAS's keys.** C, Space and 1 release one field while the game is held; P holds a running game
+and releases a held one. Read in `tas.c`, once a field and once a pass of the paused loop, from
+`keyboard.c`'s key levels, and acted on only where a key goes down: the port's keyboard already
+latches taps for the game's menus, but SDL hands a held key's OS repeats on as key-downs too, so a
+tap latched by one of those would step a field every repeat — a level that is new is the only
+honest "the player pressed this". While a TAS session is live the four keys are the TAS's:
+`keyboard.c`'s `keyboard_pad`, the one place a layout's keys become a pad, drops a key
+`tas_key_claimed()` reports, so stepping a field is not also a kick (C is Circle) and a pause is
+not a pedal (Space is Cross) — and it clears the key's own held state with it, so nothing is left
+held when the claim ends. Outside a session, and with `DHD_TAS_KEYS=0`, nothing is claimed and the
+game's keys are exactly as they were — a rule worth keeping, because those two keys are gameplay.
+The keys are also a release channel, which is what lets a pause exist without `DHD_TAS_STEP`; a
+pause *at startup* still asks for one explicitly (`DHD_TAS_STEP`, or `DHD_TAS_KEYS=1`), so an old
+command line that sets `DHD_TAS_PAUSE` alone keeps running instead of holding a windowless run
+forever with no key to press.
+
+**The pictures' pacing.** `DHD_FRAME_CLOCK=1` runs the game unpaced, and that is the point of it:
+one fixed field per VBLANK, as fast as the machine makes them, is what makes the same movie the
+same run. It also meant a TAS session presented several hundred pictures a second. The obvious fix
+— stop taking `DHD_FRAME_CLOCK=1` to mean "unpaced" — is the wrong one, and worth writing down why:
+`paced` in `kernel.c` is not a presentation switch. It also turns on `fps.c`'s wall-clock step (the
+game would step by the time the field took, and a movie would no longer replay) and the
+just-in-time frames (the pad is read at a different point in the field). So the pacing went where
+the pictures are: `host.c`'s `pacing_present` already holds a picture to a due time, and
+`host_pacing_handoff` now gives it a due from a grid of its own (`pace_grid.h`, the field period)
+when the game is unpaced — `DHD_FRAME_PACE`, on by default for that case, `=0` for the old
+behaviour. The frames behind the picture wait for the GS, not for a timer, so the game still runs
+as fast as it can and the screen keeps 59.94 Hz; headless and bench runs have no pictures to pace
+and are untouched. What stays identical: the fields the game sees, the field a movie names, the
+pad read point, and the step.
 
 ## The road to savestates and rewind
 
@@ -289,14 +326,19 @@ diff is the honest scope of the savestate work.
 
 Not merged yet, and not to be merged before the game-level checks below are made.
 
-Verified here: `tas_selftest.py` 74 checks, 0 failed; `gcc -std=gnu99 -Wall -Wextra` clean on
+Verified here: `tas_selftest.py` 89 checks, 0 failed (the two additions' checks: the four keys
+claimed only in a session, P holding and releasing, C/Space/1 one field each, a held key giving
+nothing over 31 passes of the paused loop, and a paused start with and without a way out); `gcc -std=gnu99 -Wall -Wextra` clean on
 `tas.c` and `-fsyntax-only` clean on the four hook sites (`pad.c`, `autopad.c`, `kernel.c`,
 `online.c`); `tools/check_docs.py` and `tools/check_tree.py` clean.
 
 Not verified here, and not claimable without them: the state traces of a base build and of this
 one with no `DHD_TAS_*` set (the hooks are written to be inert, and this lane cannot trace), a
-recorded run played back to the same trace, and the game by hand — the disc, the toolchain and a
-GPU are on the user's PC, not here. Nothing in `src/` changed.
+recorded run played back to the same trace, the keys as a person actually presses them (a tap
+shorter than a poll is not seen: one field, 16 ms, while paused) and the pictures actually
+arriving at 60 Hz — the disc, the toolchain and a GPU are on the user's PC, not here. The
+presenter's half of the pacing (`host.c`, `present.c`) could not even be compiled in this lane: it
+needs SDL3's headers and the render library. Nothing in `src/` changed.
 
 The audit's verdict on the foundation: sound for this game, with no emulator assumption in it. Its
 field key is the game's own VBLANK, its input enters where padman's frames are written and is

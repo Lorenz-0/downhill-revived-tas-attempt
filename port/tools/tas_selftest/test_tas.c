@@ -26,7 +26,19 @@ static HostPad last_pad;       /* what the game consumed this field */
 int pads_online(void) { return online_stub; }
 int port_delta_clock(void) { return delta_clock; }
 void port_clock_rebase(void) { rebase_calls++; }
-void host_service_gs_pump_messages(void) { }
+/* The TAS's keys, as keyboard.c reports them (keyboard_position_down, keyboard_focused). The
+   paused loop calls host_service_gs_pump_messages once a pass, so that is where "the player" acts
+   while the game is held: a held key's release, the press that frees it. */
+static uint8_t key_down[256];
+static int pump_calls;
+static int press_p_at;          /* the pump pass that presses P (0: never) */
+void host_service_gs_pump_messages(void)
+{
+    pump_calls++;
+    if (press_p_at && pump_calls >= press_p_at) { key_down['P'] = 1; press_p_at = 0; }
+}
+int keyboard_focused(void) { return 1; }
+int keyboard_position_down(unsigned position) { return position < 256 && key_down[position]; }
 void host_service_gs_window_close(void) { window_closed = 1; }
 /* The stub host's clock, with the port's contract (host_api.h, hle.h): host_wall_seconds is a
    monotonic wall clock in seconds, and host_sleep_ms really blocks. Both matter to the unit under
@@ -100,6 +112,14 @@ static void state(const char *tag)
     printf("%s playing=%d recording=%d paused=%d pad_calls=%d rebases=%d pad=%04X %u %u\n", tag,
            tas_playing(), tas_recording(), tas_paused(), pad_calls, rebase_calls, last_pad.buttons,
            last_pad.right_x, last_pad.right_y);
+    fflush(stdout);
+}
+
+/* The key scenario's line: the field count the action left, and whether the game is held. Named
+   apart from state() so the checks that read a state() line stay one line each. */
+static void note(const char *tag)
+{
+    printf("%s fields=%llu paused=%d\n", tag, (unsigned long long)kernel_vsync_count, tas_paused());
     fflush(stdout);
 }
 
@@ -212,6 +232,64 @@ int main(int argc, char **argv)
         tas_capture(1, &other);
         tas_vsync();
         state("after");
+        return 0;
+    }
+    if (!strcmp(sc, "claim")) {
+        /* which keys the TAS owns this run: the game's layout never sees these (host.c) */
+        tas_init();                               /* as the first field does, before any pad read */
+        printf("claimed C=%d space=%d one=%d P=%d other=%d\n", tas_key_claimed('C'),
+               tas_key_claimed(0x20), tas_key_claimed('1'), tas_key_claimed('P'), tas_key_claimed('X'));
+        return 0;
+    }
+    if (!strcmp(sc, "keys")) {
+        /* the TAS's keys with no control file at all: P holds the game and releases it, C, Space
+           and 1 step one field each, and a key held down steps nothing more. Each press is polled
+           by the field it starts (a level, so a key that never goes up is never new again). */
+        int before;
+        tas_init();
+        printf("claimed C=%d space=%d one=%d P=%d other=%d\n", tas_key_claimed('C'),
+               tas_key_claimed(0x20), tas_key_claimed('1'), tas_key_claimed('P'), tas_key_claimed('X'));
+        key_down['P'] = 1;                        /* running: P pauses before the next field */
+        field();
+        state("press-p");
+        note("k-press-p");
+        key_down['P'] = 0;
+        key_down['C'] = 1;                        /* paused: C releases exactly one field */
+        field();
+        state("step-c");
+        note("k-step-c");
+        /* C is still down. Nothing may release the field until the pump presses P, 31 passes on. */
+        press_p_at = pump_calls + 31;
+        before = pump_calls;
+        field();
+        printf("held_pumps=%d\n", pump_calls - before);
+        fflush(stdout);
+        state("after-held");
+        note("k-after-held");
+        key_down['C'] = 0;                        /* every key up, one field to let the levels go */
+        key_down['P'] = 0;
+        field();
+        state("settled");
+        note("k-settled");
+        key_down['P'] = 1;                        /* running: P pauses */
+        field();
+        state("press-p-2");
+        note("k-press-p-2");
+        key_down['P'] = 0;
+        key_down[0x20] = 1;                       /* paused: Space steps one field */
+        field();
+        state("step-space");
+        note("k-step-space");
+        key_down[0x20] = 0;
+        key_down['1'] = 1;                        /* paused: 1 steps one field */
+        field();
+        state("step-one");
+        note("k-step-one");
+        key_down['1'] = 0;
+        key_down['P'] = 1;                        /* paused: P releases the game */
+        field();
+        state("end");
+        note("k-end");
         return 0;
     }
     if (!strcmp(sc, "clock-contract")) {

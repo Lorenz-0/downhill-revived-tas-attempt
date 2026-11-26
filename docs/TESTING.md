@@ -108,10 +108,14 @@ drives the unit through the order the game itself uses, one field at a time —
 
     python port/tools/tas_selftest.py
 
-74 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+89 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
-unit's pause gate times a 4 ms sleep to decide whether it may hold the game); playback and
-recording offline through the order above, on player 1's pad only (a movie answers for no other
+unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
+(C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,
+and the four are claimed away from the game's layout only while a TAS session is live — the claim
+itself is checked in `test_keyboard.c`, where a claimed Space and C reach no pad button and the
+keys the session does not claim keep working); playback
+and recording offline through the order above, on player 1's pad only (a movie answers for no other
 pad, and a second pad's capture never reaches the file); the not-reproducible warning when the
 game steps by wall time (a stub for `port_delta_clock`); a released pause rebasing the game clock
 once; an online session dropping playback, recording and a pause before any pad of the field is
@@ -140,6 +144,26 @@ never `PASS` (the summary counts them):
 
 The runner prints a `note` line whenever it skips a family, naming the reason, and exits nonzero
 only for a real failure.
+
+### Playing a TAS run at 60
+
+`DHD_FRAME_CLOCK=1` makes the game step one fixed field at a time, which is what makes a movie
+repeat — and it used to present pictures as fast as the game could make them, so a TAS session ran
+at several hundred fields a second. `DHD_FRAME_PACE` (finding 285) paces the *pictures* instead of
+the game: the simulation stays unpaced and fixed-step, and the presenter hands each picture on at
+the field rate (59.94 Hz), which is what a player sees. `DHD_FRAME_PACE=0` turns it off (the old
+uncapped behaviour); headless and batch runs are never paced. What it does not change: the fields
+the game sees, the fields a movie names, the pad read point, and the wall-clock step — `paced` in
+`kernel.c` is deliberately *not* flipped for this, because it also turns on the delta-time step
+(`fps.c`) and the just-in-time frames, and either one would change the run a movie records.
+
+The TAS's keys work in the same session, with no control file: C, Space or 1 while paused release
+exactly one field (on the key's way down, so a held key and the OS's key repeats give one field
+each at most), and P pauses a running game or releases a paused one. They belong to the TAS while a
+session is live (`DHD_TAS_PLAY`/`DHD_TAS_RECORD`/`DHD_TAS_STEP`/`DHD_TAS_PAUSE`, or
+`DHD_TAS_KEYS=1` on its own), so in a TAS session Space is not the pedal and C is not the kick;
+`DHD_TAS_KEYS=0` keeps them the game's. Outside a TAS session nothing is claimed and the game's
+keys are exactly as they were.
 
 What it cannot show: the game itself. Whether the field the game consumes is the field the movie
 names, and whether a recorded run plays back to the same state, are the state-trace checks in

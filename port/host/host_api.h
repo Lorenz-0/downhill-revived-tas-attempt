@@ -275,6 +275,9 @@ void host_console_write(uint32_t address, uint32_t bytes);
 
 /* Wall-clock presentation state stays native. These contain no guest pointers. */
 void host_pacing_config(double period, uint64_t field);
+/* The pictures keep a grid of the field rate while the game itself runs unpaced (kernel.c:
+   DHD_FRAME_CLOCK=1 with DHD_FRAME_PACE, finding 285's TAS). 0 hands them on at once. */
+void host_pacing_present(int on);
 void host_pacing_wait(void);
 void host_pacing_handoff(int fresh);
 void host_pacing_input(void);

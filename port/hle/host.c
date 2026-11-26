@@ -1030,6 +1030,8 @@ static void keyboard_merge(HostPad *out)
         int count = keyboard_keys(layout, keys);
         for (int i = 0; i < count; i++) {
             unsigned place = keys[i];
+            /* The TAS's own keys never get here: keyboard_pad drops them while a session claims
+               them (keyboard.c, finding 285). */
             if (text_input_key_allowed(keyboard_typed_of(place)) && (keyboard_position_down(place) || taps[place]))
                 down[keys[i]] = 1;
         }
@@ -1480,6 +1482,12 @@ void host_service_presence(uint32_t a0)
 static double pacing_period=1001.0/60000.0;
 static uint64_t pacing_field;
 static double jit_due, frame_began;           /* the next picture's due; when this frame's pad was read */
+/* The pictures' own grid, for a game that runs unpaced (kernel.c: DHD_FRAME_CLOCK=1, the fixed
+   step a movie repeats on). Nothing else in the loop waits: the pictures do, and the frames
+   behind them wait for the GS (the queue, or the presenter's own thread), so the game goes on at
+   whatever rate it can and the screen keeps the field rate. */
+static int present_paced;
+static PaceGrid present_grid;
 static double handed_due, handed_began, handed_time;  /* the same for the picture being handed on now, and when */
 static volatile float work_ms[WORK_SAMPLES];  /* pad read to picture ready, by the presenter */
 static volatile unsigned work_count;
@@ -1980,9 +1988,14 @@ void input_latency_presented(void)
 }
 
 void host_pacing_config(double period, uint64_t field) { pacing_period=display_period(period); pacing_field=field; }
+void host_pacing_present(int on) { present_paced=on; }
 void host_pacing_handoff(int fresh)
 {
-    handed_due = fresh ? jit_due : 0;
+    /* A just-in-time frame's due is jit_due. A deterministic game's pictures take a place on a grid
+       of their own instead (0: the grid starts again from now, present at once). */
+    if (fresh) handed_due = jit_due;
+    else if (present_paced) handed_due = pace_grid_next(&present_grid, host_wall_seconds(), pacing_period);
+    else handed_due = 0;
     handed_began = frame_began;
     handed_time = fresh ? host_wall_seconds() : 0;  /* pacing_present's work samples */
     if (latency_on()) latency_handoff();

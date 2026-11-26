@@ -15,8 +15,9 @@ renderer, one code path). What is where: `docs/STATE.md`, "The port".
 - Game state must not change by accident. The check is the per-field state trace
   (`port/hle/state_trace.c`, `port/tools/state_trace_run.py`, `state_diff.py`; finding 081):
   boot and race traces against the base build. Deterministic runs (`DHD_FRAME_CLOCK=1`) keep the
-  original clock. Picture checks across runs are not a speed check (start spots differ); use the
-  trace.
+  original clock; they are unpaced by design and their *pictures* keep the field rate
+  (`DHD_FRAME_PACE`, finding 285), so never make them paced to slow the screen down. Picture
+  checks across runs are not a speed check (start spots differ); use the trace.
 - What the game can detect goes in dhd.log (CPU, GPU, OS, settings, timings; `port/gs/perf_log.c`,
   finding 129), so a report needs no questions.
 - Settings: one table in the Rust crate (`port/render/settings/src/table.rs`, finding 101); PC

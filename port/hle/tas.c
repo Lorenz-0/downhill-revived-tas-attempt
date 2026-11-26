@@ -31,6 +31,13 @@
    when it releases, the game clock is rebased, as the online waits do, so the paused seconds are
    never paid back as extra steps of physics.
 
+   The TAS's own keys (C, Space, 1 to step a field; P to pause and release) are read here, once
+   per field and once per pass of the paused loop, on the key's way down only, so a held key and
+   SDL's key repeats give one field each at most. They are the TAS's while a session is live:
+   keyboard.c's keyboard_pad asks tas_key_claimed() before a layout key becomes a pad button,
+   so stepping a field is never also a kick. Outside a TAS session (and with DHD_TAS_KEYS=0)
+   nothing is claimed and the keys are the game's as before.
+
    See tas.h for the movie format, the control file's commands and the input timing. */
 #include "tas.h"
 #include "hle.h"
@@ -68,6 +75,7 @@ static int step_granted;      /* one field released by the control file, cleared
 static int block_ok = -1;     /* this host can hold the game between fields; measured once */
 static int online_refused;    /* an online session ended the TAS; said once, never undone */
 static const char *play_path, *record_path, *step_path;
+static int keys_on;           /* the TAS's keys are live this run (DHD_TAS_KEYS, or a session) */
 
 static TasFrame *movie;
 static size_t movie_len, movie_cap;
@@ -324,6 +332,60 @@ static int host_can_block(void)
     return host_wall_seconds() - before >= 0.001;
 }
 
+/* The TAS's keys, by the place of the key on a US keyboard: the two ways to release a field and
+   the one way to hold it. keyboard.c gives a letter by its place and the rest by the table of
+   keys a binding can take (port/hle/controls_table.h); 0x20 and 0x31 are in it. */
+enum { TAS_KEYS = 4 };
+enum { TAS_KEY_PAUSE = 3 };   /* the other three are the ways to release a field */
+static const unsigned tas_key_vk[TAS_KEYS] = {'C', 0x20, '1', 'P'};
+static uint8_t tas_key_last[TAS_KEYS];   /* the level each key had when it was last read */
+
+/* The keys belong to the TAS while a session is live (keyboard.c's keyboard_pad asks, so C is not
+   the kick and Space is not the pedal then). Outside one, and with DHD_TAS_KEYS=0, they are the
+   game's keys as before: a player who is not running a TAS keeps the pedal on Space. */
+int tas_key_claimed(unsigned vk)
+{
+    if (!initialized || !keys_on) return 0;
+    for (int i = 0; i < TAS_KEYS; i++)
+        if (tas_key_vk[i] == vk) return 1;
+    return 0;
+}
+
+static int can_pause_here(void);
+static int online_blocks_tas(void);
+
+static void tas_key_pause_toggle(void)
+{
+    if (paused) {
+        paused = 0;
+        tas_log("running (P)");
+        return;
+    }
+    if (online_blocks_tas()) {
+        tas_log("P refused: online session (TAS is offline only)");
+        return;
+    }
+    if (!can_pause_here()) return;
+    paused = 1;
+    tas_log("paused (P: C, Space or 1 steps a field, P releases)");
+}
+
+/* One read of the four keys: only the ones that went down since the last read count. Levels, not
+   the taps keyboard.c latches for the game's menus, because SDL hands a held key's repeats on as
+   key-downs too, and a tap latched by one of those would step a field every repeat. */
+static void tas_keys_read(void)
+{
+    int focused = keyboard_focused();
+    for (int i = 0; i < TAS_KEYS; i++) {
+        int down = focused && keyboard_position_down(tas_key_vk[i]);
+        int pressed = down && !tas_key_last[i];
+        tas_key_last[i] = (uint8_t)down;
+        if (!pressed) continue;
+        if (i == TAS_KEY_PAUSE) tas_key_pause_toggle();
+        else if (paused) step_granted = 1;  /* one field; the game stays paused (the loop below) */
+    }
+}
+
 /* 1 when a pause may hold this host; 0 (with one line) when it may not. */
 static int can_pause_here(void)
 {
@@ -344,6 +406,12 @@ void tas_init(void)
     parse_path_env("DHD_TAS_STEP", &step_path);
     const char *pause = getenv("DHD_TAS_PAUSE");
     int want_pause = pause && *pause && strcmp(pause, "0") != 0;
+    const char *keys = getenv("DHD_TAS_KEYS");
+    int keys_asked = keys && *keys && strcmp(keys, "0") != 0;   /* DHD_TAS_KEYS=1 and up */
+    int keys_off = keys && *keys && !keys_asked;                /* DHD_TAS_KEYS=0 */
+    keys_on = !keys_off && (keys_asked || play_path || record_path || step_path || want_pause);
+    if (keys_on)
+        tas_log("keys: C, Space or 1 steps a field, P pauses and releases it (DHD_TAS_KEYS=0 turns them off)");
     if (play_path) playing = load_movie(play_path);
     if (record_path) record_open(record_path);
     /* A movie is a run: repeatable only on the game's fixed step. Normal play, a frame rate other
@@ -352,11 +420,17 @@ void tas_init(void)
         tas_log("this run is not reproducible: the game steps by wall time, not one fixed field "
                 "(set DHD_FRAME_CLOCK=1 for a movie that replays the same)");
     if (want_pause) {
-        if (!step_path)
-            tas_log("DHD_TAS_PAUSE needs DHD_TAS_STEP=<file> to release a field: running unpaused");
+        /* A pause at the start needs a way out that is asked for: the control file, or the keys
+           explicitly (DHD_TAS_KEYS). A session's keys alone are not enough for it, because a run
+           with no window has no keys to press: an old command line that sets DHD_TAS_PAUSE and
+           nothing else keeps running, as it always did, instead of holding forever. */
+        if (!step_path && !keys_asked)
+            tas_log("DHD_TAS_PAUSE needs DHD_TAS_STEP=<file> (or DHD_TAS_KEYS=1) to release a field: "
+                    "running unpaused");
         else if (can_pause_here()) {
             paused = 1;
-            tas_log("paused at the start; write step/run/pause/quit to '%s'", step_path);
+            if (step_path) tas_log("paused at the start; write step/run/pause/quit to '%s'", step_path);
+            else tas_log("paused at the start; C, Space or 1 steps a field and P releases it");
         }
     }
 }
@@ -429,8 +503,10 @@ void tas_frame_advance_wait(void)
         switch (read_command()) {
         case TAS_PAUSE:
             if (online) tas_log("'pause' refused: online session (TAS is offline only)");
-            /* Without a control file a pause could never be released: refuse it, never hang. */
-            else if (!step_path) tas_log("'pause' needs DHD_TAS_STEP=<file>: ignored");
+            /* With neither a control file nor the keys a pause could never be released: refuse
+               it, never hang. */
+            else if (!step_path && !keys_on)
+                tas_log("'pause' needs DHD_TAS_STEP=<file> (or the TAS's keys): ignored");
             else if (can_pause_here()) { paused = 1; tas_log("paused"); }
             break;
         case TAS_QUIT: tas_quit(); break;
@@ -441,6 +517,7 @@ void tas_frame_advance_wait(void)
             break;
         default: break;
         }
+        if (keys_on) tas_keys_read();  /* P pauses; a step key now would move a field nobody asked for */
         return;
     }
     for (;;) {
@@ -452,6 +529,7 @@ void tas_frame_advance_wait(void)
         case TAS_QUIT: tas_quit(); return;
         default: break;  /* already paused, or nothing new */
         }
+        if (keys_on) tas_keys_read();
         if (step_granted || !paused) break;
         host_service_gs_pump_messages();
         host_sleep_ms(16);

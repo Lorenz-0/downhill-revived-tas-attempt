@@ -1,5 +1,6 @@
 /* keyboard.c: the layout, menus versus riding, the steering ramp, latching and merging
-   (finding 059), and a player's own layout (finding 157). Built and run by port/tools/test_runtime.py. */
+   (finding 059), a player's own layout (finding 157), and the keys a TAS session claims
+   (finding 285). Built and run by port/tools/test_runtime.py. */
 #include "hle.h"
 #include "controls_table.h"
 #include <assert.h>
@@ -7,6 +8,17 @@
 #include <string.h>
 
 static uint8_t down[256];
+
+/* The TAS's keys (tas.h tas_key_claimed), as the test sets them: a session claims C, Space, 1 and
+   P, and nothing else, and they are then no part of the game's pad (keyboard.c keyboard_pad). */
+static unsigned claimed[8];
+static int claimed_count;
+int tas_key_claimed(unsigned vk)
+{
+    for (int i = 0; i < claimed_count; i++)
+        if (claimed[i] == vk) return 1;
+    return 0;
+}
 static const ControlsLayout *layout;  /* NULL: the default one */
 static int input_rate=60;
 
@@ -220,7 +232,22 @@ int main(void)
     keyboard_focus(0);
     keyboard_taps_take(taps);
     assert(taps[0x0D] == 0 && !keyboard_position_down(0x0D));
-    puts("test_keyboard: ok (60 and 144 Hz ramps, a player's layout, a tap between two reads)");
+    /* a TAS session's keys are not the game's (finding 285): the default layout has Space on Cross
+       and C on Circle, so a pedal-and-kick press must reach nothing while the claim is on, and the
+       keys the session does not claim keep working; letting the claim go gives both back */
+    memset(down, 0, sizeof down);
+    down[' '] = down['C'] = down['A'] = 1;
+    claimed[0] = 'C', claimed[1] = ' ', claimed[2] = '1', claimed[3] = 'P', claimed_count = 4;
+    p = pad(1, 15);
+    assert((p.buttons & PAD_CROSS) == 0 && (p.buttons & PAD_CIRCLE) == 0);  /* the pedal and the kick */
+    assert(p.buttons & PAD_L1);                                            /* A is L1: not claimed */
+    claimed_count = 0;
+    p = pad(1, 15.1);
+    assert((p.buttons & PAD_CROSS) && (p.buttons & PAD_CIRCLE) && (p.buttons & PAD_L1));
+    memset(down, 0, sizeof down);
+    pad(1, 15.2);
+
+    puts("test_keyboard: ok (60 and 144 Hz ramps, a player's layout, a tap between two reads, a TAS's keys)");
     return 0;
 }
 /* Standalone keyboard tests retain the original 60-Hz input interval. */

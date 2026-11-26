@@ -7,8 +7,18 @@
                            turns playback off: nothing is neutralized, the pad falls back to
                            the controller and to DHD_NAV / DHD_AUTOPAD / DHD_RACE_PAD)
    DHD_TAS_RECORD=<path> - record the input the game consumes to a movie file (truncated at start)
-   DHD_TAS_PAUSE=1       - start paused. Needs DHD_TAS_STEP: without it the game runs unpaused,
-                           and so does a host whose sleep does not block (the browser)
+   DHD_TAS_KEYS=1        - the TAS's keys, live in any run. Without it they are live when one of
+                           the variables above is set (a TAS session), and =0 turns them off in
+                           one. C, Space and 1 (either of them) release exactly one field while
+                           the game is paused, on the key's way down only: holding one down gives
+                           one field, and SDL's key repeats give none. P pauses a running game and
+                           releases a paused one, so neither a pause nor its release needs the
+                           control file. While the keys are live they belong to the TAS: the
+                           game's own keyboard layout never sees them (keyboard.c's keyboard_pad),
+                           so C is not the kick and Space is not the pedal in a TAS session.
+   DHD_TAS_PAUSE=1       - start paused. Needs DHD_TAS_STEP (or the keys) to release a field:
+                           without either the game runs unpaused, and so does a host whose sleep
+                           does not block (the browser)
    DHD_TAS_STEP=<path>   - the control file, read once a field and deleted after every command:
                              empty file or "step"  - while paused: run exactly one more field
                                                      while running: ignored (no frame is owed later)
@@ -47,6 +57,7 @@ void tas_init(void);               /* once, from the first field; reads the vari
 int tas_playing(void);             /* 1 when a movie loaded and is being played */
 int tas_recording(void);           /* 1 when recording (the movie file is open) */
 int tas_paused(void);              /* 1 when frame advance is holding the game */
+int tas_key_claimed(unsigned vk);  /* 1: this key is the TAS's, while a TAS session is live */
 void tas_frame_advance_wait(void); /* start of a field: pauses, polls the control file, refuses online */
 int tas_pad(int player, HostPad *out);  /* player 0 only: fill the pad from the movie; 0 otherwise */
 void tas_capture(int player, const HostPad *out); /* player 0 only: keep the pad this field consumed */
