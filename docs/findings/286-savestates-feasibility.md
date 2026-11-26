@@ -205,6 +205,14 @@ state trace hashes at, after the graphics work the field started has been waited
 - **the field counter is restored with the state**, so a trace comparison of "load at N and run 600
   fields" against "run to N+600" is a straight diff (`DHD_STATE_TRACE`, `state_diff.py`).
 
+**One build failure, and what it taught:** the first cut held the GS image as a 4 MiB static, and
+the wasm link refused it — `wasm-ld: error: initial memory too small, 1897499920 bytes needed`. The
+core's data image runs from 0x70200000 to about 0x70D9C000 and its initial memory ends at 0x70E00000
+(`build_wasm.py`), so there is roughly 800 KB of room for new statics in the whole module, not 4 MB.
+The images are the heap's now, allocated at the first save and sized by their owners, which is the
+same place `state_trace.c` puts the packet it hands to `host_service_gs_trace_pop` — so nothing new
+is in the module's data at all, and the initial memory is untouched.
+
 **Verified here:** `tas_selftest.py` **112 checks, 0 failed** — four new, from `test_savestate.c`,
 which drives the same reader and writer the game does over three small blocks and refuses four wrong
 files (another size, another name, a short file, not a savestate) while proving the targets are

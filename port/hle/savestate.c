@@ -32,11 +32,36 @@ typedef struct {
     uint32_t version, field, blocks, total;
 } SsHeader;
 
-/* The images of the state that is not in guest memory. The GS prefix is 4 MiB (gs.h), the same
-   copy state_trace.c keeps; the kernel's and padman's are sized by their own units. */
-static Gs gs_image;
-enum { KERNEL_IMAGE_MAX = 384 * 1024, PAD_IMAGE_MAX = 4096 };
-static uint8_t kernel_image[KERNEL_IMAGE_MAX], pad_image[PAD_IMAGE_MAX];
+/* The images of the state that is not in guest memory: the GS prefix (4 MiB, gs.h) and the
+   kernel's and padman's own state, each sized by its owner at the first use and kept from then on.
+
+   They are the heap's, not the module's data, for a measured reason: the core's data image already
+   runs from 0x70200000 to about 0x70D9C000 inside an initial memory that ends at 0x70E00000
+   (build_wasm.py), so a 4 MiB array here is "initial memory too small" at the wasm link — the first
+   cut of this unit failed to build for exactly that. state_trace.c hands a malloc'd packet to a host
+   service the same way (GADDR(packet), host_service_gs_trace_pop), so a heap buffer is a buffer the
+   host services can be given in both builds. */
+static void *gs_image;   /* offsetof(Gs, sync) bytes: the GS prefix */
+static uint8_t *kernel_image, *pad_image;
+static uint32_t kernel_bytes, pad_bytes;
+
+static int images(void)
+{
+    if (kernel_image) return 1;
+    kernel_bytes = kernel_state_size();
+    pad_bytes = pad_state_size();
+    gs_image = malloc(offsetof(Gs, sync));
+    kernel_image = malloc(kernel_bytes ? kernel_bytes : 1);
+    pad_image = malloc(pad_bytes ? pad_bytes : 1);
+    if (!gs_image || !kernel_image || !pad_image) {
+        free(gs_image), free(kernel_image), free(pad_image);
+        gs_image = NULL, kernel_image = NULL, pad_image = NULL;
+        hle_log("savestate: no memory for the state's images (%.1f MB) — savestates are off\n",
+                (double)(offsetof(Gs, sync) + kernel_bytes + pad_bytes) / (1024.0 * 1024.0));
+        return 0;
+    }
+    return 1;
+}
 
 static char save_path[512], load_path[512];
 static char quick_path[512];
@@ -92,24 +117,19 @@ static void add(SsBlock *b, int *n, const char *name, void *data, uint32_t bytes
 static int collect(SsBlock *b)
 {
     int n = 0;
-    uint32_t ks = kernel_state_size(), ps = pad_state_size();
-    if (ks > sizeof kernel_image || ps > sizeof pad_image) {
-        hle_log("savestate: the units' state is larger than this unit's images (kernel %u, pad %u)\n",
-                (unsigned)ks, (unsigned)ps);
-        return 0;
-    }
+    if (!images()) return 0;
     kernel_state_save(kernel_image);
     pad_state_save(pad_image);
-    host_service_gs_snapshot(GADDR(&gs_image), (uint32_t)offsetof(Gs, sync));
+    host_service_gs_snapshot(GADDR(gs_image), (uint32_t)offsetof(Gs, sync));
     add(b, &n, "ram", GUEST(0), 0x02000000u);
     add(b, &n, "stacks", GUEST(0x06000000), 0x01000000u);
     add(b, &n, "scratch", GUEST(0x70000000), 0x4000u);
     add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE);
     add(b, &n, "vu", GUEST(0x11000000), 0x10000u);
     add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2);
-    add(b, &n, "gs", &gs_image, (uint32_t)offsetof(Gs, sync));
-    add(b, &n, "kernel", kernel_image, ks);
-    add(b, &n, "pad", pad_image, ps);
+    add(b, &n, "gs", gs_image, (uint32_t)offsetof(Gs, sync));
+    add(b, &n, "kernel", kernel_image, kernel_bytes);
+    add(b, &n, "pad", pad_image, pad_bytes);
     return n;
 }
 
@@ -233,7 +253,7 @@ int savestate_load(const char *path)
     if (!savestate_read_file(path, b, n, &field)) return 0;
     /* The blocks are in place. What the units hold outside guest memory goes back, then the clock is
        rebased: the time between the save and the load is no game time. */
-    host_service_gs_restore(GADDR(&gs_image), (uint32_t)offsetof(Gs, sync));
+    host_service_gs_restore(GADDR(gs_image), (uint32_t)offsetof(Gs, sync));
     kernel_state_load(kernel_image);
     pad_state_load(pad_image);
     port_clock_rebase();
