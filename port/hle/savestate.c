@@ -35,6 +35,7 @@
 #include "tas.h"
 #include "fps.h"
 #include "ps2asm.h"
+#include "../runtime/memory.h"   /* PS2_RAM_BASE: where PS2 address 0 is in the module */
 #include "../gs/gs.h"
 
 extern ps2_cpu ps2;
@@ -155,11 +156,16 @@ static int collect(SsBlock *b)
     /* Every packet the field fed has reached the GS state (state_trace.c waits the same way before
        its own snapshot). */
     host_service_graphics_wait();
-    add(b, &n, "ram", GUEST(0), 0x02000000u, 0);
+    /* PS2 address 0 is at PS2_RAM_BASE (0x08000000) inside the module, not at 0: the module's own
+       shadow stack and its null guard page live in the first 4 MiB of its memory, so a copy from 0
+       reads the stack and then the guard page, and the runtime ends the process with an
+       out-of-bounds trap. This unit did exactly that on Windows (finding 286): the log's last line
+       was "savestate: write ram 33554432 bytes" and then "host64 trap: Out-of-bounds access". */
+    add(b, &n, "ram", (void *)(uintptr_t)PS2_RAM_BASE, 0x02000000u, 0);
     /* Not the 64 EE thread stacks at 0x06000000: see the note at the top of this file. */
-    add(b, &n, "scratch", GUEST(0x70000000), 0x4000u, 0);
+    add(b, &n, "scratch", GUEST(PS2_SCRATCHPAD), 0x4000u, 0);
     add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE, 0);
-    add(b, &n, "vu", GUEST(0x11000000), 0x10000u, 0);
+    add(b, &n, "vu", GUEST(0x11000000), 0x10000u, 0);   /* as state_trace.c reads it (finding 286) */
     add(b, &n, "cpu", &ps2, (uint32_t)sizeof ps2, 0);
     add(b, &n, "gs", gs_chunk, (uint32_t)offsetof(Gs, sync), 1);   /* the piece buffer, streamed */
     add(b, &n, "kernel", kernel_image, kernel_bytes, 0);

@@ -203,6 +203,21 @@ stand on:**
 The keys are **Ctrl+5** (save) and **Ctrl+8** (load) rather than F5/F8, so a plain press of a key the
 game may want stays the game's, and the edge is only taken with Ctrl held.
 
+**The crash the third log finally showed, and its cause.** The log's last lines were
+
+    savestate: write ram     33554432 bytes
+    host64 trap: Out-of-bounds access in linear memory or a table (EE fiber 1, wasm depth 0)
+
+— the save died inside the first block. The block was `GUEST(0)` 32 MiB, which is PS2 address 0 …
+except that this unit is *module* code, and in the module PS2 address 0 is at **PS2_RAM_BASE
+(0x08000000)**, not at 0: the first 4 MiB of the module's memory is wasm-ld's shadow stack
+(`--stack-first`, committed by `host64_memory_commit_stack`) above a null guard page at [0, 0x4000),
+and the low RAM *view* starts at 0x00400000. A copy from 0 therefore reads the shadow stack and then
+the uncommitted guard page, and wasm2c's bounds check ends the process with an out-of-bounds trap —
+the same class of mistake as the EE stacks (reading a region because its address looked right), one
+layer down. The block now reads `PS2_RAM_BASE`, which is what `state_trace.c` has always used for
+RAM (`PS2_PTR`, `PS2_SCRATCHPAD`), and the scratchpad goes through `PS2_SCRATCHPAD` by name.
+
 **What the first two logs a report came with actually contained** (worth keeping, because between
 them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
 closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line
