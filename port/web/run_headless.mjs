@@ -133,14 +133,15 @@ const impl={
   host_pacing_period:()=>1/60,
 };
 const noops=`host_sleep_ms host_wait_wall host_dpi_aware host_callbacks_drain host_frame_registers host_frame_video host_capture_name
-host_pacing_config host_pacing_wait host_pacing_handoff host_pacing_input host_callback_heartbeat
+host_pacing_config host_pacing_wait host_pacing_handoff host_pacing_input host_pacing_present host_pacing_present_period host_callback_heartbeat
 host_sound_open host_sound_write host_sound_reset host_sound_tick host_sound_log_stack snd_host_bench
 host_service_host_init host_service_host_console_init host_service_host_settings_load host_service_host_pad_vibrate
 host_service_movie_prepare host_service_movie_start host_service_movie_audio host_service_graphics_wait host_service_graphics_shutdown
 host_service_gs_vsync host_service_gs_pump_messages host_service_gs_window_title host_service_gs_native_view
 host_service_gs_window_apply host_service_gs_present_options_apply host_service_gs_window_close
 host_service_text_input_begin host_service_text_input_end host_service_host_backtrace host_service_presence host_service_touch_field
-host_service_net_get_lobby host_service_clipboard_set`.split(/\s+/);
+host_service_net_get_lobby host_service_clipboard_set
+host_service_keyboard_focused host_service_keyboard_key`.split(/\s+/);  // headless: no keyboard
 for(const n of noops)impl[n]=()=>{};
 impl.host_service_net_offered=()=>0;  // as www/net.js: no online in the browser (finding 143)
 for(const n of ['host_service_net_racing','host_service_net_seconds','host_service_net_server_ms','host_heartbeat_eip','host_service_launcher_open'])impl[n]=()=>0;

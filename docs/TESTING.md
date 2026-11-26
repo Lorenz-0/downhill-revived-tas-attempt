@@ -108,9 +108,16 @@ drives the unit through the order the game itself uses, one field at a time —
 the real `keyboard.c` and drives the keys through `keyboard_key`, so the claim is tested where the
 game feels it: a claimed key reaches no pad button, an unclaimed one still does.
 
+It also builds the boundary as the port builds it (finding 285, revision 7): `keyboard.c` a second
+time with every public name prefixed `host_`, linked so that the *only* keyboard in the program is
+the host's — the TAS's keys reach the core through `host_service_keyboard_focused/key` and nothing
+else — and it measures the presentation pacing's arithmetic (`test_pace.c`) against the three ways
+a fixed-step run's pictures went uncapped: a 0 due, a due that runs away from the wall clock, and a
+spacing taken from the game's frame rate setting rather than the field's.
+
     python port/tools/tas_selftest.py
 
-94 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+104 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
 unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
 (C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,

@@ -328,9 +328,14 @@ async function start(m) {
       if (due > now + 1) await new Promise(r => setTimeout(r, due - now)); else await yieldTask();
     }),
   };
+  // The core's TAS keys (host_api.h, port/hle/tas.c): the page's key levels, which main.js keeps
+  // in m.input and clears when the page loses the focus, so a browser run reads the same keys a
+  // native one does (the core's own copy of keyboard.c has no key events either way).
+  impl.host_service_keyboard_focused = () => 1;
+  impl.host_service_keyboard_key = vk => (vk < 256 && keys[vk] ? 1 : 0);
   Object.assign(impl, createNet({span, str}));
   const noops = `host_sleep_ms host_wait_wall host_dpi_aware host_callbacks_drain host_frame_registers host_frame_video host_capture_name
-host_pacing_wait host_pacing_handoff host_pacing_input host_callback_heartbeat
+host_pacing_wait host_pacing_handoff host_pacing_input host_pacing_present host_pacing_present_period host_callback_heartbeat
 host_sound_open host_sound_reset host_sound_tick host_sound_log_stack snd_host_bench
 host_service_host_init host_service_host_console_init host_service_host_settings_load host_service_host_pad_vibrate
 host_service_movie_prepare host_service_movie_start host_service_movie_audio host_service_graphics_wait host_service_graphics_shutdown

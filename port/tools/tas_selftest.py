@@ -143,6 +143,31 @@ def main():
         return 1
     plain = built(plain)
 
+    # The boundary build (finding 285, revision 7): keyboard.c compiled as *the host's* copy only,
+    # with every public name prefixed, and the harness's own imports answering from it. The core
+    # links no keyboard at all, so if the TAS's keys ever went back to the core's copy of
+    # keyboard.c this build would not link - the test is the build, not only its output.
+    names = sorted(set(re.findall(r'^[A-Za-z_][A-Za-z0-9_ \t\*]*\b(keyboard_[a-z_]+)\s*\(',
+                                  open(keyboard).read(), re.M)))
+    bridge, bridge_error = None, ''
+    if names:
+        host_obj = os.path.join(BUILD, 'keyboard_host')
+        p = subprocess.run([cc] + CFLAGS + INCLUDES + ['-D%s=host_%s' % (n, n) for n in names] +
+                           ['-c', keyboard, '-o', host_obj], capture_output=True, text=True)
+        if p.returncode != 0:
+            lines = [l for l in (p.stderr + p.stdout).strip().splitlines() if l.strip()]
+            bridge_error = lines[-1] if lines else 'the host copy did not compile'
+        else:
+            out = os.path.join(BUILD, 'test_tas_bridge')
+            p = subprocess.run([cc] + CFLAGS + INCLUDES + ['-DDHD_TAS_BRIDGE=1', '-o', out, harness,
+                                                          tas, host_obj] + LIBS,
+                               capture_output=True, text=True)
+            if p.returncode == 0 and os.path.exists(built(out)):
+                bridge = built(out)
+            else:
+                lines = [l for l in (p.stderr + p.stdout).strip().splitlines() if l.strip()]
+                bridge_error = lines[-1] if lines else 'the link failed'
+
     fault, fault_error = {}, ''
     for name, extra, ld in (('nomem', 'failmalloc.c', '--wrap=realloc'),
                             ('flush', 'failflush.c', '--wrap=fflush')):
@@ -161,6 +186,27 @@ def main():
         say('note  the fault-injection builds need a linker that can interpose symbols (GNU ld '
             '--wrap); this toolchain cannot, so those checks report SKIP, never PASS')
         say('      ' + fault_error)
+
+    # 0b. the presentation pacing's arithmetic (pace_grid.h): the pictures of a free-running
+    #     deterministic run keep the field rate, and each way that did not is measured
+    pace = os.path.join(BUILD, 'test_pace')
+    p = subprocess.run([cc] + CFLAGS + INCLUDES + ['-o', pace, os.path.join(SRC, 'test_pace.c')] + LIBS,
+                       capture_output=True, text=True)
+    if p.returncode == 0 and os.path.exists(built(pace)):
+        rc, out, err = run(built(pace), [], {})
+        held = re.search(r'pacing: (\d+\.\d\d) pictures/s held to the field rate', out)
+        check('the pictures keep the field rate however fast the run is',
+              bool(held) and 59.0 <= float(held.group(1)) <= 60.5, out + err)
+        faster = re.search(r'a 5x faster run: (\d+\.\d\d)', out)
+        check('and a five times faster run changes nothing',
+              bool(faster) and 59.0 <= float(faster.group(1)) <= 60.5, out + err)
+        check('a 0 due and a due far ahead both go uncapped (the ways revision 7 failed)',
+              re.search(r'pacing: the three uncapped ways measured: (\d+)/s \(a 0 due\), (\d+)/s', out) is not None
+              and '144/s (a 144 Hz spacing)' in out, out + err)
+        check('the pacing arithmetic is itself sound', 'test_pace: ok' in out, out + err)
+    else:
+        check('the pictures keep the field rate however fast the run is', False,
+              'test_pace.c did not build: ' + (p.stderr or p.stdout)[-300:])
 
     # 0. the stub host's clock: monotonic, and a sleep that really sleeps (tas.c's pause gate
     #    times a 4 ms sleep to decide whether frame advance can hold at all)
@@ -252,6 +298,20 @@ def main():
     rc, out, err = run(plain, ['keys-pad'], {'DHD_TAS_KEYS': '1', 'STUB_ONLINE_FIELD': '1'})
     check('an online session gives the keys back', 'words=00000000' in out and 'pad=6400' in out,
           out + err)
+
+    # 4e ter. the boundary itself: P and C come from the host's keyboard (SDL's side) into the
+    #     core's TAS, which has no keyboard of its own in this build
+    check('the core links with no keyboard of its own (the keys can only cross)', bridge is not None,
+          bridge_error)
+    if bridge:
+        rc, out, err = run(bridge, ['bridge'], {'DHD_TAS_KEYS': '1'})
+        check('the host keyboard reaches the core: P holds the game', 'paused=1' in out, out + err)
+        check('the host keyboard reaches the core: C moves one field', 'fields=1' in out, out + err)
+        check('the held game stays held through the step', 'after-c paused=1' in out, out + err)
+        check('the keys are read through the host service, not a local copy',
+              re.search(r'bridge reads=[1-9]', out) is not None, out + err)
+        rc, out, err = run(bridge, ['bridge'], {})
+        check('no TAS session: the core reads no key at all', 'reads=0 paused=0' in out, out + err)
 
     rc, out, err = run(plain, ['keys'], {'DHD_TAS_KEYS': '1'})
     check('P pauses a running game', 'k-press-p fields=1 paused=1' in out, out + err)

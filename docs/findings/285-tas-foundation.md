@@ -340,6 +340,56 @@ restore must put back or the game's own timers will see a jump.
 then take one mid-race checkpoint of guest memory alone and diff what a restore gets wrong. That
 diff is the honest scope of the savestate work.
 
+## Revision 7: two things the first run on the user's PC found
+
+Both were found by playing the build, not by the tests, and the tests are the part that changed
+with them.
+
+**The hotkeys did nothing.** C, Space, 1 and P reached `keyboard_key()` in the host's copy of
+`keyboard.c` (SDL is the host's) and the TAS read `keyboard_position_down()` in the *core's* copy,
+whose `position_down[]` no key event ever reaches: two copies of one file, one written, one read.
+Revision 6's bitmap carried the *claim* the other way (the core telling the host which keys are
+its), which is why nothing looked wrong. The levels now come the other way too, through two host
+services that answer from the copy SDL writes: `host_service_keyboard_focused()` and
+`host_service_keyboard_key(vk)` (`host_api.h`, `port/hle/host.c`, called once per read while a
+session is live). No pointer crosses — a buffer would be a guest address the host's keyboard would
+have to know how to write — and the core asks two questions per key instead.
+
+The test is the build: `tas_selftest.py` compiles `keyboard.c` a second time with every public
+name prefixed `host_` and links the harness with *only* that copy, its own imports answering from
+it. The core then has no keyboard of its own at all, so a TAS that went back to reading one would
+not link — and the same checks (P holds the game, C moves exactly one field, the game stays held)
+pass in both builds. With no session, the harness's import counter proves the core reads no key.
+
+**The pictures were still uncapped.** Revision 5 gave the presenter a *field grid*: one slot per
+field, the due time the picture should be shown at. For a game that steps a field as fast as it can
+make them, that grid runs away from the wall clock — hundreds of slots a second — and the
+presenter's catch-up reach (a due more than 50 ms away is dismissed, so a stalled queue can never
+hold a run) then threw the hold away on every picture: the screen went as fast as the machine drew
+it while the run itself was perfectly fine. A 0 due did the same thing more simply (0 means
+"present at once" and skips every other rule), and so did a spacing taken from the game's own
+frame rate setting: a run fixed at 59.94 fields has 59.94 pictures to show, not 144.
+
+Now the due a free-running picture is handed with is `now` — never 0, never ahead — and the thing
+that paces the screen is the presenter's own hold: no picture sooner than one *field* after the one
+before, counted from when the last picture actually went out (`pace_show_at`, `pace_present_due`,
+`port/hle/pace_grid.h`). The field is 1001/60000 s however the game's frame rate is set, so
+`DHD_FRAME_CLOCK=1` with `DHD_FRAME_PACE=1` shows 59.94 pictures a second with the fixed step
+untouched (the sim is throttled by the picture queue, one field per picture, and a movie's fields
+are numbered by the field, so the run is the same run). `DHD_FRAME_PACE=0` still hands the pictures
+on at once for a throughput run, and `DHD_INTERP` still follows the display's refresh instead —
+`kernel_init` now says so in `dhd.log` rather than leaving it to be discovered.
+
+`DHD_PROFILE=1` (or `DHD_PACING_LOG`) now prints, every five seconds from the presenter:
+`pacing: 59.94 pictures/s shown, 59.94 fields/s run, 16.68 ms held a picture` — the two numbers a
+"the FPS is wrong" report has to tell apart, on the machine that has the screen.
+
+Verified here: `tas_selftest.py` **104 checks, 0 failed**, of which six are the boundary build and
+four are `test_pace.c`, which measures each of the three uncapped ways (500/s for a 0 due, 500/s
+for a due far ahead, 144/s for a 144 Hz spacing) against the 59.94 the fix gives, and the same for
+a run five times faster. Not verified here: any of it on a screen — the toolchain, the GPU and the
+display are on the user's PC.
+
 ## Result
 
 Not merged yet, and not to be merged before the game-level checks below are made.

@@ -33,7 +33,11 @@
 
    The TAS's own keys (C, Space, 1 to step a field; P to pause and release) are read here, once
    per field and once per pass of the paused loop, on the key's way down only, so a held key and
-   SDL's key repeats give one field each at most. They are the TAS's while a session is live:
+   SDL's key repeats give one field at most. The levels come from the host
+   (host_service_keyboard_focused and host_service_keyboard_key): SDL is the host's, and the host's
+   copy of keyboard.c is where a key lands, so this module's copy of it stays blank (finding 285,
+   revision 7). They are
+   the TAS's while a session is live:
    keyboard.c's keyboard_pad asks tas_key_claimed() before a layout key becomes a pad button,
    so stepping a field is never also a kick. Outside a TAS session (and with DHD_TAS_KEYS=0)
    nothing is claimed and the keys are the game's as before.
@@ -379,15 +383,22 @@ static void tas_key_pause_toggle(void)
 
 /* One read of the four keys: only the ones that went down since the last read count. Levels, not
    the taps keyboard.c latches for the game's menus, because SDL hands a held key's repeats on as
-   key-downs too, and a tap latched by one of those would step a field every repeat. */
+   key-downs too, and a tap latched by one of those would step a field every repeat.
+
+   The levels come from the host (host_service_keyboard_focused/key), not from keyboard.c's statics
+   in this module: SDL runs on the host and its events go to the host's copy of keyboard.c, so this
+   copy's position_down[] is never set and reading it made every key look up for ever (revision 7's
+   bug: the hotkeys did nothing). Both calls are imports, only while a session is live. */
 static void tas_keys_read(void)
 {
-    int focused = keyboard_focused();
+    static const char *const names[TAS_KEYS] = {"C", "Space", "1", "P"};
+    int focused = host_service_keyboard_focused();
     for (int i = 0; i < TAS_KEYS; i++) {
-        int down = focused && keyboard_position_down(tas_key_vk[i]);
-        int pressed = down && !tas_key_last[i];
-        tas_key_last[i] = (uint8_t)down;
+        int held = focused && host_service_keyboard_key(tas_key_vk[i]);
+        int pressed = held && !tas_key_last[i];
+        tas_key_last[i] = (uint8_t)held;
         if (!pressed) continue;
+        tas_log("key %s down", names[i]);   /* the action logs itself below */
         if (i == TAS_KEY_PAUSE) tas_key_pause_toggle();
         else if (paused) step_granted = 1;  /* one field; the game stays paused (the loop below) */
     }

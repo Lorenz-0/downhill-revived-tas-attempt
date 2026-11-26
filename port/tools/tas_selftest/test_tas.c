@@ -16,6 +16,31 @@
 #include "tas.h"
 #include "controls_table.h"
 
+/* Which copy of keyboard.c this build has (tas_selftest.py builds it two ways). Plain: the one
+   copy, as a lone side. DHD_TAS_BRIDGE: only the host's, under its own names, so the core has no
+   keyboard of its own to reach — which is the build that proves the TAS's keys cross the boundary
+   (finding 285, revision 7). */
+#ifdef DHD_TAS_BRIDGE
+/* keyboard.c built with every public name prefixed host_ (tas_selftest.py) */
+void host_keyboard_key(unsigned position, unsigned typed, int down);
+void host_keyboard_focus(int focused);
+void host_keyboard_pad(const struct ControlsLayout *layout, const uint8_t down[256], int riding,
+                       double now, HostPad *out);
+int host_keyboard_focused(void);
+int host_keyboard_position_down(unsigned position);
+#define KB_key host_keyboard_key
+#define KB_focus host_keyboard_focus
+#define KB_pad host_keyboard_pad
+#define KB_focused host_keyboard_focused
+#define KB_position_down host_keyboard_position_down
+#else
+#define KB_key keyboard_key
+#define KB_focus keyboard_focus
+#define KB_pad keyboard_pad
+#define KB_focused keyboard_focused
+#define KB_position_down keyboard_position_down
+#endif
+
 uint64_t kernel_vsync_count;
 /* The HLE window the TAS publishes its claim in (port/runtime/memory.h): guest memory this test
    maps itself onto a buffer, so GUEST(PS2_TAS_KEYS) — the address the game's keyboard reads —
@@ -38,13 +63,21 @@ void port_clock_rebase(void) { rebase_calls++; }
    where "the player" acts while the game is held: the press that frees it. */
 static int pump_calls;
 static int press_p_at;          /* the pump pass that presses P (0: never) */
-static void press(unsigned place, int down) { keyboard_key(place, place, down); }
+static void press(unsigned place, int down) { KB_key(place, place, down); }
 void host_service_gs_pump_messages(void)
 {
     pump_calls++;
     if (press_p_at && pump_calls >= press_p_at) { press('P', 1); press_p_at = 0; }
 }
 double host_pacing_period(void) { return 1.0 / 60; }   /* keyboard.c's field timing (host.c's) */
+
+/* The keys as the core reads them (host_api.h, host.c): this stub host answers from the copy of
+   keyboard.c the test presses keys into, exactly as the real host answers from its own. The real
+   crossing — a host copy SDL writes and a module copy it never does — is
+   port/tools/tas_selftest/test_tas_bridge.c. */
+static int bridge_reads;
+int host_service_keyboard_focused(void) { bridge_reads++; return KB_focused(); }
+int host_service_keyboard_key(unsigned vk) { bridge_reads++; return KB_position_down(vk); }
 void host_service_gs_window_close(void) { window_closed = 1; }
 /* The stub host's clock, with the port's contract (host_api.h, hle.h): host_wall_seconds is a
    monotonic wall clock in seconds, and host_sleep_ms really blocks. Both matter to the unit under
@@ -136,7 +169,7 @@ int main(int argc, char **argv)
     int i;
 
     guest_base = (uintptr_t)hle_window - PS2_HLE_WINDOW;   /* the guest's window is this buffer */
-    keyboard_focus(1);                                     /* the game's window has the keyboard */
+    KB_focus(1);                                           /* the game's window has the keyboard */
 
     if (!strcmp(sc, "play3")) {
         for (i = 0; i < 3; i++) { field(); state("f"); }
@@ -259,7 +292,7 @@ int main(int argc, char **argv)
         down['C'] = down[' '] = down['A'] = 1;    /* kick (Circle), pedal (Cross), L1 */
         memset(&p, 0, sizeof p);
         p.left_x = p.left_y = p.right_x = p.right_y = 128;
-        keyboard_pad(&control_defaults[CONTROL_KEYBOARD], down, 1, 1.0, &p);
+        KB_pad(&control_defaults[CONTROL_KEYBOARD], down, 1, 1.0, &p);
         printf("pad=%04X cross=%d circle=%d l1=%d\n", p.buttons, (p.buttons & PAD_CROSS) != 0,
                (p.buttons & PAD_CIRCLE) != 0, (p.buttons & PAD_L1) != 0);
         fflush(stdout);
@@ -273,6 +306,25 @@ int main(int argc, char **argv)
         printf("claimed C=%d space=%d one=%d P=%d other=%d\n", tas_key_claimed('C'),
                tas_key_claimed(0x20), tas_key_claimed('1'), tas_key_claimed('P'), tas_key_claimed('X'));
         return 0;
+    }
+    if (!strcmp(sc, "bridge")) {
+        /* The keys reach the TAS from the host's keyboard and from nothing else: P holds the game,
+           C then moves exactly one field and it stays held. In the DHD_TAS_BRIDGE build the only
+           keyboard in the program is the host's (under its own names), so a core that read its own
+           copy would not even link. */
+        int reads, held;
+        unsigned long long before;
+        press('P', 1);
+        field();                                  /* P down: the game is held from here */
+        reads = bridge_reads, held = tas_paused();
+        press('P', 0);
+        press('C', 1);
+        before = (unsigned long long)kernel_vsync_count;
+        field();                                  /* C down: exactly one field, still held */
+        printf("bridge reads=%d paused=%d after-c paused=%d fields=%llu\n", reads, held, tas_paused(),
+               (unsigned long long)kernel_vsync_count - before);
+        fflush(stdout);
+        return 0;                                 /* ends while held: nothing outlives it */
     }
     if (!strcmp(sc, "keys")) {
         /* the TAS's keys with no control file at all: P holds the game and releases it, C, Space

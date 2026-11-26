@@ -1129,9 +1129,19 @@ void kernel_init(void)
                 host_getenv("DHD_STATE_TRACE");
     present_pace = !paced && !pace_off && !batch;
     host_pacing_present(present_pace);
-    if (present_pace)
+    /* One picture a field, whatever the game's frame rate setting says: a fixed step is a field,
+       and the screen shows one at a time (DHD_FRAME_PACE=0 hands them on at once). */
+    host_pacing_present_period(1001.0 / 60000.0);
+    if (present_pace) {
         hle_log("pacing: the fixed step runs unpaced (a movie repeats); the pictures keep the field "
-                "rate (DHD_FRAME_PACE=0 presents them at once)\n");
+                "rate, 59.94 a second (DHD_FRAME_PACE=0 presents them at once)\n");
+        /* The presenter holds a picture to its place; the interpolated one shows every refresh
+           instead and ignores the field rate entirely (gpu_rust.c: !n->interp). */
+        const char *interp = host_getenv("DHD_INTERP");
+        if (interp && atoi(interp) != 0)
+            hle_log("pacing: DHD_INTERP is on, so the pictures follow the display's refresh and not "
+                    "the field rate; unset DHD_INTERP to see a fixed-step run at 59.94 a second\n");
+    }
     host_service_host_init();
     host_service_gs_reset();
     state_trace_init();  /* after gs_reset, which clears the GS struct; no-op unless DHD_STATE_TRACE */
