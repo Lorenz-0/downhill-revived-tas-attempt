@@ -64,10 +64,26 @@ void port_clock_rebase(void) { rebase_calls++; }
 static int pump_calls;
 static int press_p_at;          /* the pump pass that presses P (0: never) */
 static void press(unsigned place, int down) { KB_key(place, place, down); }
+/* A player's hand seen while the game is held: the paused loop polls the keys every pass, so a
+   release and the next press have to land on different passes to be two presses, as a hand's do. */
+static struct { int at, place, down; } pump_presses[8];
+static int pump_press_count;
+static void press_at(int passes, unsigned place, int down)
+{
+    pump_presses[pump_press_count].at = pump_calls + passes;
+    pump_presses[pump_press_count].place = (int)place;
+    pump_presses[pump_press_count].down = down;
+    pump_press_count++;
+}
 void host_service_gs_pump_messages(void)
 {
     pump_calls++;
     if (press_p_at && pump_calls >= press_p_at) { press('P', 1); press_p_at = 0; }
+    for (int i = 0; i < pump_press_count; i++)
+        if (pump_presses[i].at && pump_calls >= pump_presses[i].at) {
+            press((unsigned)pump_presses[i].place, pump_presses[i].down);
+            pump_presses[i].at = 0;
+        }
 }
 double host_pacing_period(void) { return 1.0 / 60; }   /* keyboard.c's field timing (host.c's) */
 
@@ -376,6 +392,28 @@ int main(int argc, char **argv)
         state("end");
         note("k-end");
         return 0;
+    }
+    if (!strcmp(sc, "step-run")) {
+        /* a step key from a *running* game: the field it is sitting on runs, then the game is held
+           (the first PC run pressed C, Space and 1 while the game was running and concluded the
+           keys did nothing: a step used to need P first, and nothing said so). */
+        unsigned long long before;
+        tas_init();
+        press('C', 1);
+        before = (unsigned long long)kernel_vsync_count;
+        field();                                  /* running: C holds at this boundary */
+        printf("step-run paused=%d fields=%llu\n", tas_paused(),
+               (unsigned long long)kernel_vsync_count - before);
+        /* the release and the next press land while the game is held: a hand moves faster than the
+           loop, but not between two looks at it */
+        press_at(1, 'C', 0);
+        press_at(3, 'C', 1);                      /* held: the next press releases one field */
+        before = (unsigned long long)kernel_vsync_count;
+        field();
+        printf("step-run press=%d fields=%llu\n", tas_paused(),
+               (unsigned long long)kernel_vsync_count - before);
+        fflush(stdout);
+        return 0;                                 /* ends held: nothing outlives it */
     }
     if (!strcmp(sc, "clock-contract")) {
         /* the timing shim itself: monotonic, and a sleep that really sleeps */

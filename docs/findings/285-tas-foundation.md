@@ -390,6 +390,33 @@ for a due far ahead, 144/s for a 144 Hz spacing) against the 59.94 the fix gives
 a run five times faster. Not verified here: any of it on a screen — the toolchain, the GPU and the
 display are on the user's PC.
 
+## Revision 8: the step keys needed a pause first
+
+The first PC run after revision 7 had the frame rate capped and P working, and C, Space and 1 doing
+nothing. They were read correctly — P is read by the same two imports, and revision 7's boundary
+build is what proves the crossing — and then dropped: a step key granted a field only `if (paused)`,
+and a running game is not paused. The rule existed for the *control file* (a `step` written while
+the game runs must not be held for a later pause; it says so and refuses), where a command no one is
+waiting on would move a field nobody asked for. For a key a person is pressing it is just a key that
+does nothing, and nothing said so — and the first thing anyone does with a frame-advance key is
+press it on a running game.
+
+A step key now means the same thing from either state, which is the exchange itself: pressed on a
+running game it holds at the boundary, so the field it is sitting on runs and the next one waits
+(`tas: paused (C: this field runs, then the game is held; P releases)`); pressed on a held game it
+releases exactly that one field and holds again (`tas: C: one field released (field 1234)`). P is
+unchanged, and the file's `step` while running is still refused: a file is not a person.
+
+Three things in `dhd.log` now answer "the keys do nothing" without another round trip: one line at
+the first read with the host's own focus state (`tas: keys: the host reports focus=1` — a window
+without the keyboard reports no key at all), a line per press with what it did, and the field number
+the press moved. The held loop also looks at the keys every 2 ms rather than every 16, because a tap
+shorter than the poll is a key that was never pressed.
+
+Verified here: 108 checks, 0 failed, four of them new — a `step-run` scenario presses a step key on
+a running game (one field runs, the game is held), schedules a release and a second press into the
+held loop (exactly one more field), and reads both log lines. Not verified here: a screen and a hand.
+
 ## Result
 
 Not merged yet, and not to be merged before the game-level checks below are made.

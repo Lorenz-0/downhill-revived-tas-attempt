@@ -381,6 +381,27 @@ static void tas_key_pause_toggle(void)
     tas_log("paused (P: C, Space or 1 steps a field, P releases)");
 }
 
+/* A step key, from either state, is one field and then a held game: while the game is held it
+   releases the field at hand, and while the game runs it holds at this boundary (the field it is
+   sitting on runs, the next one waits) — which is the same exchange, and what a frame advance means.
+   It used to be ignored unless the game was already held, so the keys read as "nothing happens"
+   on the first PC run: the user had to know to press P first, and nothing said so. */
+static void tas_step_press(const char *name)
+{
+    if (paused) {
+        step_granted = 1;
+        tas_log("%s: one field released (field %llu)", name, (unsigned long long)kernel_vsync_count + 1);
+        return;
+    }
+    if (online_blocks_tas()) {
+        tas_log("%s refused: online session (TAS is offline only)", name);
+        return;
+    }
+    if (!can_pause_here()) return;
+    paused = 1;
+    tas_log("paused (%s: this field runs, then the game is held; P releases)", name);
+}
+
 /* One read of the four keys: only the ones that went down since the last read count. Levels, not
    the taps keyboard.c latches for the game's menus, because SDL hands a held key's repeats on as
    key-downs too, and a tap latched by one of those would step a field every repeat.
@@ -392,7 +413,12 @@ static void tas_key_pause_toggle(void)
 static void tas_keys_read(void)
 {
     static const char *const names[TAS_KEYS] = {"C", "Space", "1", "P"};
+    static int said_focus;
     int focused = host_service_keyboard_focused();
+    if (!said_focus) {
+        said_focus = 1;
+        tas_log("keys: the host reports focus=%d (a window without the keyboard reads no key)", focused);
+    }
     for (int i = 0; i < TAS_KEYS; i++) {
         int held = focused && host_service_keyboard_key(tas_key_vk[i]);
         int pressed = held && !tas_key_last[i];
@@ -400,7 +426,7 @@ static void tas_keys_read(void)
         if (!pressed) continue;
         tas_log("key %s down", names[i]);   /* the action logs itself below */
         if (i == TAS_KEY_PAUSE) tas_key_pause_toggle();
-        else if (paused) step_granted = 1;  /* one field; the game stays paused (the loop below) */
+        else tas_step_press(names[i]);
     }
 }
 
@@ -429,7 +455,8 @@ void tas_init(void)
     int keys_off = keys && *keys && !keys_asked;                /* DHD_TAS_KEYS=0 */
     keys_on = !keys_off && (keys_asked || play_path || record_path || step_path || want_pause);
     if (keys_on)
-        tas_log("keys: C, Space or 1 steps a field, P pauses and releases it (DHD_TAS_KEYS=0 turns them off)");
+        tas_log("keys: C, Space or 1 steps a field and holds the game, P pauses and releases it "
+                "(DHD_TAS_KEYS=0 turns them off)");
     tas_keys_publish();
     if (play_path) playing = load_movie(play_path);
     if (record_path) record_open(record_path);
@@ -555,7 +582,9 @@ void tas_frame_advance_wait(void)
         if (keys_on) tas_keys_read();
         if (step_granted || !paused) break;
         host_service_gs_pump_messages();
-        host_sleep_ms(16);
+        /* 2 ms, not a field: a tap shorter than the poll would be missed between two looks, and a
+           key that reads as never pressed is a frame advance that silently does nothing. */
+        host_sleep_ms(2);
     }
     step_granted = 0;  /* exactly the field this call releases */
     /* The held time was host time: the game clock must not count it as steps of physics. The port

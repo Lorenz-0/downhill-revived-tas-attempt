@@ -325,6 +325,14 @@ def main():
     check('the pause says which keys release it', 'paused (P: C, Space or 1 steps a field' in err, err)
     check('the keys are live only in a session, and say so', err.count('keys: C, Space or 1 steps') == 1, err)
 
+    # 4e quater. a step key needs no pause first: it holds the game at the field it is on and then
+    #     releases exactly the next press's field
+    rc, out, err = run(plain, ['step-run'], {'DHD_TAS_KEYS': '1'})
+    check('a step key holds a running game', 'step-run paused=1 fields=1' in out, out + err)
+    check('the next press of a step key moves one field', 'step-run press=1 fields=1' in out, out + err)
+    check('a step key says what it did', 'C: one field released (field' in err, err)
+    check('the first step key press says it held the game', 'this field runs, then the game is held' in err, err)
+
     # the keys are a release channel, so a paused start no longer needs the control file
     hung, out, err = run_blocking(plain, ['nopause'], {'DHD_TAS_PAUSE': '1', 'DHD_TAS_KEYS': '1'})
     check('the keys alone can hold a paused start', hung and 'paused at the start; C, Space or 1' in err,

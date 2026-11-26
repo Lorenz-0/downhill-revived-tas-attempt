@@ -157,7 +157,7 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   field, P holds and releases the game (`DHD_TAS_KEYS=0` gives the keys back to the game), and
   `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
   simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
-  (`port/tools/tas_selftest.py`, docs/TESTING.md, 104 checks; POSIX and Windows timing, the
+  (`port/tools/tas_selftest.py`, docs/TESTING.md, 108 checks; POSIX and Windows timing, the
   fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet;
   a movie is valid only for the boot that produced it.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's

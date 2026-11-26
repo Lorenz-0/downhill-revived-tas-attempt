@@ -117,7 +117,7 @@ spacing taken from the game's frame rate setting rather than the field's.
 
     python port/tools/tas_selftest.py
 
-104 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+108 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
 unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
 (C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,
