@@ -108,8 +108,11 @@ drives the unit through the order the game itself uses, one field at a time —
 
     python port/tools/tas_selftest.py
 
-60 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
-cover: playback and recording offline through that order; an online session dropping playback,
+72 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+cover: playback and recording offline through that order, on player 1's pad only (a movie answers
+for no other pad, and a second pad's capture never reaches the file); the not-reproducible warning
+when the game steps by wall time (a stub for `port_delta_clock`); a released pause rebasing the
+game clock once; an online session dropping playback,
 recording and a pause before any pad of the field is read, with its file closed and its message
 said once; `DHD_TAS_PAUSE` and a `pause` command in an online session never holding the game, and
 a paused session entering one released rather than blocked; every way a movie is refused (columns,
@@ -243,8 +246,8 @@ first field):
 
 | Variable | What |
 |---|---|
-| `DHD_TAS_PLAY=FILE` | play a movie: one field a line, 21 columns, `#` comments (tas.h has the format). A movie is played whole or not at all: a file that cannot be read, holds no field, or holds one line with the wrong number of columns, an out-of-order or repeated field, or a value out of range is refused whole (`play movie ... refused: playback off`, with the line and the reason before it) and the pads keep their other sources |
-| `DHD_TAS_RECORD=FILE` | record the input the game consumes, a line a field, flushed as it goes and closed at the end (or on a failed write, with the complete fields before it kept) |
+| `DHD_TAS_PLAY=FILE` | play a movie into player 1's pad (the main rider; pads 2-4 keep the device and the scripts): one field a line, 21 columns, `#` comments (tas.h has the format). A movie is played whole or not at all: a file that cannot be read, holds no field, or holds one line with the wrong number of columns, an out-of-order or repeated field, or a value out of range is refused whole (`play movie ... refused: playback off`, with the line and the reason before it) and the pads keep their other sources |
+| `DHD_TAS_RECORD=FILE` | record player 1's input as the game consumes it, a line a field, flushed as it goes and closed at the end (or on a failed write, with the complete fields before it kept) |
 | `DHD_TAS_PAUSE=1` | start paused. Needs `DHD_TAS_STEP`: without it the game runs unpaused and the log says so |
 | `DHD_TAS_STEP=FILE` | the control file, read once a field and deleted after every command: an empty file or `step` (one more field, while paused), `run` / `resume`, `pause`, `quit` (ends the game, as EXIT GAME's Yes). Unknown content is refused by name. A `step` written while running is ignored; a `pause` in an online session is refused |
 

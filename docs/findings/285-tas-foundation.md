@@ -35,6 +35,12 @@ editor, a timeline, video capture.
       pause was not covered online; the parser accepted too much. `tas.c` rewritten for the gate,
       the online pause and a strict whole-movie parser, and the regression suite added
       (`port/tools/tas_selftest.py`, 60 checks through the game's field order, 0 failed).
+- [x] 2026-11-25: architectural audit against the port's own machine (below, "In this game's own
+      terms"). Three narrow corrections: the movie drives and records player 1 only (it took pads
+      2-4 from their own sources), `tas_init` says once when the run cannot be repeated (the game
+      then steps by wall time), and a released pause rebases the game clock so paused seconds are
+      never paid back as physics. No emulator assumption was found to remove: the hooks were
+      already written against the game's own VBLANK, padman frames and libpad buffer.
 - [ ] the checks above that need the toolchain and the disc: a real run's state traces, and the
       game by hand.
 
@@ -58,6 +64,43 @@ refusal names the file, the line and the fault, then states the outcome once
 fields that did load; the pads fall back to the controller and to `DHD_NAV` / `DHD_AUTOPAD` /
 `DHD_RACE_PAD`.
 
+## In this game's own terms
+
+This port runs the game's own code: the matching decompilation in `src/` compiled to a native
+core, with `port/hle` standing in for the PS2 system (`docs/STATE.md`, "The port: how it runs the
+game"). No console's frame boundary and no controller port are emulated in the sense a TAS has to
+care about, and the TAS is written against these facts:
+
+- **A field is the game's own VBLANK.** `kernel_vsync_count` (kernel.c) counts the VBLANK events
+  the port delivers; the game ends each of its frames in `sceGsSyncV` (`func_00243CE8`) waiting
+  for that event, and the port's `deliver()` raises it at the virtual cycle deadline. It counts
+  the game's frames, the same way in every build, and it is the movie's key.
+- **EE time is virtual already.** The EE's cycle clock is the port's `ee_frame_clock_*`
+  (timer.c, kernel.c): a kernel boundary adds a fixed 1024 cycles and a wait advances to its
+  deadline, so timers, alarms and the field spacing never see the host. The one wall-clock
+  coupling left is the *physics step* (fps.c, `port_delta_clock`), which is why a movie needs the
+  fixed step to be a repeatable run.
+- **Input enters as the hardware's does.** `pad.c` is the IOP's padman: two 128-byte frames per pad
+  in EE RAM, the older refreshed at each VBLANK from `pads_read`. The game's libpad copies the
+  newer reply into its own `D_00660B80[id]` (`func_002451B0`), `func_0021F8E0` polls it once a
+  frame, `func_00220230`/`func_00220280` read buttons and sticks, `func_002202F8` folds a light
+  press's pressure into a button bit, and `func_00220640` hands the rider's controller
+  (`func_0017DD70`) the bit, or the pressure while riding. Player 1 is `pads_read`'s player 0
+  (port 0 slot 0, the pad the game's rider 1 reads).
+- **The TAS sits where the port's own scripts do.** `host_pad_script` (autopad.c) is the scripted
+  source above the device: `tas_pad` answers first, so a refused or absent movie leaves `DHD_NAV` /
+  `DHD_AUTOPAD` / `DHD_RACE_PAD` and the controller exactly as they were. The capture sits in
+  `pads_read`, after `held_back`: the pad padman will publish for that field.
+- **Online is another input path.** In an online race player 0's pad comes straight from the device
+  (online.c's `pads_read_now`), so a movie cannot drive it; `pads_online()` is the whole test, and
+  it is true from `DHD_NET_*` or once the ONLINE menu's room starts.
+- **A pause stops the game, not a rider.** The wait is inside `vsync()`, which `deliver()` calls:
+  while it holds, no guest fiber runs, no timer is polled, no alarm fires and no DMA completes, so
+  the whole simulation is frozen (the render thread keeps presenting the last picture).
+- **A movie is input, never state.** It is played into a live run from boot; nothing here restores
+  a machine's state, and nothing claims that replaying input alone reproduces a run from any other
+  starting point (the "Surprises" note on the missing header, and the savestate section below).
+
 ## Decisions
 
 - **Offline only, and only a real session says so.** In an online race the local player's pad
@@ -73,6 +116,27 @@ fields that did load; the pads fall back to the controller and to `DHD_NAV` / `D
   re-logged. (The first version of this gate refused on every field without ever asking
   `pads_online()`, which disabled every offline TAS at its first field: the reason the suite below
   drives the real entry point instead of the helpers.)
+- **Player 1 only.** A single-player TAS drives one pad: `tas_pad` answers only for player 0 and
+  `tas_capture` records only player 0, so pads 2-4 keep the device (a second human in a split
+  race) and the scripts (a test). Before the audit a movie answered for all four pads and the
+  recording kept all four, which took pads 2-4 from their own sources and recorded input the TAS
+  does not use. The format keeps four pads' columns, so nothing about a file changes; a file's
+  p1..p3 columns are parsed, checked, and ignored. `pad.c`'s just-in-time refresh stays off across
+  the whole pad layer while a movie plays or records, as it already is for any scripted session
+  (`DHD_NAV`, `DHD_AUTOPAD`, an online race): the input layer keeps the VBLANK timeline the movie
+  is keyed on, and a second human in a split race would read at that timeline too, one field older
+  than a live player's. That is the scripted layer's existing behaviour, not a TAS exception.
+- **A run needs the fixed step, and says so.** Normal play steps the game by the wall time since
+  the last field, a frame rate other than 60 or `DHD_STEP_CLOCK` / `DHD_STEP_PATTERN` by their own
+  rules (fps.c); only the deterministic clock makes a movie replay as the run it recorded. With
+  playback or recording on and the clock stepping any other way, `tas_init` says it once and
+  names `DHD_FRAME_CLOCK=1`. It does not refuse: playing a movie in a paced session is still a
+  coherent thing to watch, just not the same run.
+- **A pause is host time, never game time.** While paused the host clock runs and the game does
+  not, so the delta-time clock would pay the pause back as extra physics, up to the game's own
+  two-field cap a step. The wait rebases the game clock when it releases (`port_clock_rebase`,
+  the port's primitive for a wait that is no game time: an online lobby, an app returning from the
+  background), so a paused second costs no field.
 - **The movie plays where the recording samples: the VBLANK.** `pad_refresh` (pad.c) rewrites the
   frame with the device at the end of the pacing wait, for a hand player's latency, and it
   bypasses `pads_read`. Both directions therefore keep it off: the input a recording captures is
@@ -122,6 +186,13 @@ fields that did load; the pads fall back to the controller and to `DHD_NAV` / `D
   the one entry point they never used. The suite now runs the game's own order — the wait, the
   field counter, the pad, the capture, the vsync — so a gate that is wrong where the game meets it
   fails a check. A test of this unit that skips the wait is not evidence.
+- **Five bytes a pad are the whole input, pressure included.** The 12 pressure bytes a DualShock 2
+  sends are folded into a button bit for a light press by the game (`func_002202F8`), and
+  `func_00220640` returns them as a magnitude in riding mode, but every consumer of
+  `func_00220618` in the game tests it for zero (`if`, `!= 0`, `!`), so a press is a press; the
+  port's online path derives the same bytes from the buttons for the same reason (online.c). The
+  movie's buttons and sticks are therefore the complete input, and playback's 255/0 pressures are
+  what the game would have been given anyway. Nothing to store.
 - A failed write of a field leaves it to the C library whether the line's bytes reached the file,
   so the log names only the fields complete before it; a half-written line makes the strict parser
   refuse that movie whole, which is the safe half of the same coin.
@@ -130,8 +201,8 @@ fields that did load; the pads fall back to the controller and to `DHD_NAV` / `D
 
 `port/tools/tas_selftest.py` (and `docs/TESTING.md`, "The TAS unit") builds `tas.c` into a stub
 host and drives it through the game's field order, one field at a time, with `pads_online()`,
-`host_sleep_ms()` and the window close under the test's control. 60 checks, 0 failed, seconds to
-run, a C compiler and nothing else; two of them link a fault-injection build (`--wrap=realloc`,
+`host_sleep_ms()`, the game clock and the window close under the test's control. 72 checks, 0
+failed, seconds to run, a C compiler and nothing else; two of them link a fault-injection build (`--wrap=realloc`,
 the movie chunk; `--wrap=fflush`, the third field write) and are skipped where the linker has no
 `--wrap`. They cover, in the order the review asked for them: offline playback surviving the first
 field, offline recording after initialization and its three fields, playback reproducing a
@@ -142,14 +213,76 @@ behind; leaving a session with fields running, nothing paused and the refusal la
 refusal a movie can get — 20 columns, an extra column, out of order, a repeated field, a negative
 field, an overflowing field, a stick past 255, a button word past 16 bits, a truncated line at
 either end, comments only, a missing file, an allocation failure — each leaving nothing playable.
+It also holds the audit's three corrections: a movie answers for no pad but player 1's (and a
+second pad's capture in the same field never reaches the file), the not-reproducible warning
+appears exactly when the game steps by wall time and not otherwise, and a released pause rebases
+the game clock once (never when no pause was held, never when the online gate released it).
 Recording's file is checked closed with its fields when a session ends the TAS, when `quit` ends
 the game and when the game ends normally, and a failed write ending it with its complete fields.
+
+## The road to savestates and rewind
+
+Not started, and not to be started before the game-level checks below. What this game's
+architecture says about it, from the audit:
+
+**A savestate here is a copy of this machine, not of a console.** The state is: 32 MB of EE RAM at
+a fixed host address (`memory.h`, `PS2_RAM_BASE`); the 16 MB of EE thread stacks
+(`port/host64/fiber.c`: 64 slots of 256 KiB at 0x06000000); the 16 KB scratchpad; the EE's
+hardware register pages and its CPU registers; VU0/VU1 memory (64 KB at 0x11000000) and VU1's
+register file; the GS: its 4 MB software VRAM and its registers; and the HLE's own bookkeeping,
+which is host C state and *not* in RAM — the kernel's threads (each fiber's saved module stack
+pointer, call depth and native stack pointer), semaphores, alarms, timers (`cycle`, `remainder`),
+`intc_stat` and `next_vsync`, the DMA channels, the SIF queues, padman's `pads[2][4]` and
+`frame_counter` (the frames themselves are in RAM), the disc and file positions, the sound driver's
+voices and mixer, the MPEG player, the GS queue and renderer mailbox, the pacing grid and frame
+clock, and the TAS's own playback state while a movie runs. The player, rider, AI and race state
+the user asks about is all in the first item: the riders are game objects in EE RAM (the online
+puppets poke pose into the same objects, `puppet.c`), race phase and the shell's menu word are at
+their own EE addresses (`0x43F348`, `0x29DED8`), and every random number generator is an LCG whose
+state is a word in the game's data with a static seed (`D_0029D6D0`, `D_0029DA10`, `D_0029DAF8`,
+`D_0029DB60`, `D_0029DCC4`), so a RAM copy carries all of it and nothing seeds from host time.
+
+**What already exists to build on.** Guest addresses are fixed, so a restore is a copy back and
+every guest pointer stays valid; `host_service_gs_snapshot` and `host_vu1_snapshot` already hand
+the whole GS prefix and VU1's registers to the module (state_trace.c uses them); the state trace is
+a per-field, build-independent definition of what counts as game state, with the code-pointer
+identity mechanism (`port/tools/codeids.py`) for the words in RAM that hold host addresses; and
+the clock is already deterministic on the fixed step, which is the same prerequisite the movie
+needed.
+
+**The obstacle that decides the design.** The recompiled game keeps live values in host C frames:
+at a field boundary every guest thread is suspended inside an HLE wait, and the locals of the
+functions on its way there are on the fiber's *native* stack, which is host memory. A checkpoint
+that copies only guest memory resumes with stale locals. So a checkpoint must also copy each
+active fiber's native stack (fixed size, its saved pointer is in the fiber record) and restore it
+in the same process, into the same mapping. The trace deliberately ignores exactly this layer
+("wall-clock and host state are never hashed"), so the trace is a map of the state, not a savestate.
+
+**Route: checkpoints plus replay, not a snapshot per field.** 32 + 16 + 4 MB a field is no rewind
+buffer. Because the simulation is deterministic on the fixed step, a checkpoint every N fields
+plus the movie's inputs re-simulates any field between two checkpoints exactly. So a savestate is
+a compressed checkpoint and the field it belongs to; rewind is "restore the nearest earlier
+checkpoint, replay to the target"; and rerecording is the same replay that lets the movie's tail be
+rewritten from the field where new input starts. That is the design this foundation makes possible,
+and it is why a movie should then carry the checkpoint it starts from (the "Surprises" note about
+the missing header).
+
+**Named obstacles, in the order they will bite.** The native stacks above; the renderer's and audio
+device's resources, which have to be re-created and re-fed from VRAM, registers and the mixer state
+(the exact renderer can already replay a GS stream — findings 025, 085 — the same machinery); open
+disc and file positions; online sessions, which must be excluded exactly as the TAS is; anything
+that must survive a rebuild (the code-pointer identities); and the field/frame counters, which a
+restore must put back or the game's own timers will see a jump.
+
+**First experiment when the lane opens, and not before:** validate this foundation in the game,
+then take one mid-race checkpoint of guest memory alone and diff what a restore gets wrong. That
+diff is the honest scope of the savestate work.
 
 ## Result
 
 Not merged yet, and not to be merged before the game-level checks below are made.
 
-Verified here: `tas_selftest.py` 60 checks, 0 failed; `gcc -std=gnu99 -Wall -Wextra` clean on
+Verified here: `tas_selftest.py` 72 checks, 0 failed; `gcc -std=gnu99 -Wall -Wextra` clean on
 `tas.c` and `-fsyntax-only` clean on the four hook sites (`pad.c`, `autopad.c`, `kernel.c`,
 `online.c`); `tools/check_docs.py` and `tools/check_tree.py` clean.
 
@@ -157,3 +290,9 @@ Not verified here, and not claimable without them: the state traces of a base bu
 one with no `DHD_TAS_*` set (the hooks are written to be inert, and this lane cannot trace), a
 recorded run played back to the same trace, and the game by hand — the disc, the toolchain and a
 GPU are on the user's PC, not here. Nothing in `src/` changed.
+
+The audit's verdict on the foundation: sound for this game, with no emulator assumption in it. Its
+field key is the game's own VBLANK, its input enters where padman's frames are written and is
+recorded where the game consumes it, its pause freezes the whole guest, and its online gate asks
+the port's own `pads_online()`. The three corrections above were scope (player 1), honesty about
+the clock, and the pause as host time; the remaining questions are game-level, not architectural.

@@ -159,6 +159,39 @@ def main():
     check('offline playback reproduces the recording', played[:3] == recorded,
           str(played) + ' vs ' + str(recorded))
 
+    # 4b. player 1 only: pads 2-4 keep their own sources, and are not recorded
+    rc, out, err = run(plain, ['other-pads'], {'DHD_TAS_PLAY': movie})
+    check('a movie does not answer for pads 2-4', 'other_pad_taken=0' in out and 'untouched=1' in out,
+          out + err)
+    rec2 = os.path.join(WORK, 'rec-other.txt')
+    rc, out, err = run(plain, ['record-other'], {'DHD_TAS_RECORD': rec2})
+    rec2line = [l.split() for l in open(rec2).read().splitlines() if l and not l.startswith('#')]
+    check('player 1 is the pad that is recorded',
+          len(rec2line) == 1 and rec2line[0][:6] == ['1', '4000', '99', '128', '128', '128'], str(rec2line))
+    check('a second pad is not recorded', len(rec2line) == 1 and rec2line[0][6:] ==
+          ['0000', '128', '128', '128', '128'] * 3, str(rec2line))
+
+    # 4c. the clock: a paced run is not repeatable, and the TAS says so once
+    rc, out, err = run(plain, ['clock'], {'DHD_TAS_PLAY': movie, 'STUB_DELTA_CLOCK': '0'})
+    check('fixed-step clock: no warning', 'not reproducible' not in err, err)
+    check('fixed-step clock: the movie plays', 'after playing=1' in out, out + err)
+    rc, out, err = run(plain, ['clock'], {'DHD_TAS_PLAY': movie, 'STUB_DELTA_CLOCK': '1'})
+    check('wall-clock steps: the run is called not reproducible', 'not reproducible' in err, err)
+    check('wall-clock steps: DHD_FRAME_CLOCK is named', 'DHD_FRAME_CLOCK=1' in err, err)
+    check('wall-clock steps: the movie still plays', 'after playing=1' in out, out + err)
+    rc, out, err = run(plain, ['clock'], {'STUB_DELTA_CLOCK': '1'})
+    check('no movie, no warning', 'not reproducible' not in err, err)
+
+    # 4d. a pause is host time: the game clock is rebased when it releases
+    stepr = os.path.join(WORK, 'r.cmd')
+    write('r.cmd', 'step')
+    hung, out, err = run_blocking(plain, ['paused-then-online'], {'DHD_TAS_PAUSE': '1', 'DHD_TAS_STEP': stepr})
+    check('a released pause rebases the game clock once',
+          'paused playing=0 recording=0 paused=1 pad_calls=0 rebases=1' in out,
+          out + err)
+    hung, out, err = run_blocking(plain, ['nopause'], {})
+    check('a run that never pauses never rebases', 'rebases=0' in out, out + err)
+
     # 5. online playback refusal, before any pad of the field is consumed
     rc, out, err = run(plain, ['online-play'], {'DHD_TAS_PLAY': movie})
     check('online: playback refused', 'online1 playing=0' in out, out + err)
@@ -181,6 +214,7 @@ def main():
     check('online: DHD_TAS_PAUSE does not block', (not hung) and 'FIELD_OK' in out, out + err)
     check('online: the pause is dropped', 'after playing=0 recording=0 paused=0' in out, out)
     check('online: frame advance is explained', 'online session: frame advance off' in err, err)
+    check('online: nothing was rebased (no pause was held)', 'rebases=0' in out, out)
 
     # 8. a runtime pause command in an online session is refused
     stepb = os.path.join(WORK, 'b.cmd')

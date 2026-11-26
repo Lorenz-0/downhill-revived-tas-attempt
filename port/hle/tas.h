@@ -1,5 +1,7 @@
 /* Tool-assisted speedrun (TAS): per-field input movie record/playback and frame advance.
-   Offline only: an online session turns playback and recording off (see tas_frame_advance_wait).
+   Player 1 only, offline only: the movie drives and records pads_read's player 0 (the main rider)
+   and pads 2-4 keep the device and the scripts; an online session turns playback and recording
+   off (see tas_frame_advance_wait).
 
    DHD_TAS_PLAY=<path>   - play a movie file (a file that cannot be read, or holds no field,
                            turns playback off: nothing is neutralized, the pad falls back to
@@ -18,7 +20,9 @@
    Movie format (v1, text): one field per line, '#' starts a comment line,
      <field> <b0> <rx0> <ry0> <lx0> <ly0> <b1> ... <b3> <rx3> <ry3> <lx3> <ly3>
    field is kernel_vsync_count (decimal, strictly increasing), b is the PAD_* bitmask in hex,
-   sticks are 0-255 decimal (128 centred). Player 2 is p1, and so on.
+   sticks are 0-255 decimal (128 centred). Player 2 is p1, and so on. Only p0 is applied and
+   recorded; a file's p1..p3 columns are parsed and checked, and ignored, so a single-player TAS
+   never takes a second pad from its own source.
    Whole or nothing: one line that is not exactly these 21 columns (an extra column too), a field
    that is not digits only or does not strictly increase, a button word past 4 hex digits, a
    stick past 255, a truncated line, a read error, or an allocation that fails part way refuses
@@ -30,7 +34,10 @@
    takes at the end of the frame wait: what is recorded is exactly what the game consumed, and
    playback feeds the same point. A TAS run therefore plays with one field more input latency
    than a hand-played one, in both directions, which is what keeps the two consistent.
-   Use DHD_FRAME_CLOCK=1 for a repeatable run. */
+   Use DHD_FRAME_CLOCK=1 for a repeatable run: normal play steps the game by the wall time since
+   the last field, so a movie replayed in a paced session is not the same run, and tas_init says
+   so once when it is not set. A pause is host time, never game time: when it releases, the game
+   clock is rebased (as the port does for an online lobby wait), so paused seconds cost no field. */
 #ifndef TAS_H
 #define TAS_H
 
@@ -41,8 +48,8 @@ int tas_playing(void);             /* 1 when a movie loaded and is being played 
 int tas_recording(void);           /* 1 when recording (the movie file is open) */
 int tas_paused(void);              /* 1 when frame advance is holding the game */
 void tas_frame_advance_wait(void); /* start of a field: pauses, polls the control file, refuses online */
-int tas_pad(int player, HostPad *out);  /* fill the pad from the movie; 0 if it has none */
-void tas_capture(int player, const HostPad *out); /* keep the pad this field consumed */
+int tas_pad(int player, HostPad *out);  /* player 0 only: fill the pad from the movie; 0 otherwise */
+void tas_capture(int player, const HostPad *out); /* player 0 only: keep the pad this field consumed */
 void tas_vsync(void);              /* end of a field: write the recorded field */
 
 #endif

@@ -19,10 +19,23 @@
    refuses the whole file. A deterministic run must not start from a movie the game only partly
    plays.
 
+   Player 1 only (pads_read's player 0, the main rider): the movie drives that pad and records
+   that pad, and pads 2-4 keep their own sources (the device for a second player, DHD_NAV /
+   DHD_AUTOPAD / DHD_RACE_PAD for a test). The format still carries four pads' columns so a file
+   needs no version for them; the other three are parsed and checked, and not applied.
+
+   A movie is a run, and a run is only repeatable on the game's fixed step: normal play steps the
+   game by the wall time since the last field (fps.c), so the same movie in a paced session is
+   not the same run. With playback or recording on and the wall clock stepping the game, tas_init
+   says so once (DHD_FRAME_CLOCK=1 keeps the fixed one-field step). A pause is host time only:
+   when it releases, the game clock is rebased, as the online waits do, so the paused seconds are
+   never paid back as extra steps of physics.
+
    See tas.h for the movie format, the control file's commands and the input timing. */
 #include "tas.h"
 #include "hle.h"
 #include "../host/host_end.h"
+#include "../include/fps.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -89,6 +102,11 @@ static void trim(char *s)
     size_t n = strlen(s);
     while (n && (s[n-1] == '\n' || s[n-1] == '\r' || s[n-1] == ' ' || s[n-1] == '\t')) s[--n] = 0;
 }
+
+/* The pad a movie drives and records: player 1, the main rider (pads_read's player 0, port 0 slot
+   0, the pad the game's rider 1 reads). A single-player TAS takes no other pad: pads 2-4 keep the
+   device and the scripts, so a second human in a split race and a test's script are untouched. */
+enum { TAS_MOVIE_PLAYER = 0 };
 
 /* The format has no sign and no prefix: digits only, and a value that fits. */
 static int parse_u64_dec(const char *s, uint64_t *out)
@@ -328,6 +346,11 @@ void tas_init(void)
     int want_pause = pause && *pause && strcmp(pause, "0") != 0;
     if (play_path) playing = load_movie(play_path);
     if (record_path) record_open(record_path);
+    /* A movie is a run: repeatable only on the game's fixed step. Normal play, a frame rate other
+       than 60, DHD_STEP_CLOCK and DHD_STEP_PATTERN step the physics by something else (fps.c). */
+    if ((playing || recording) && port_delta_clock())
+        tas_log("this run is not reproducible: the game steps by wall time, not one fixed field "
+                "(set DHD_FRAME_CLOCK=1 for a movie that replays the same)");
     if (want_pause) {
         if (!step_path)
             tas_log("DHD_TAS_PAUSE needs DHD_TAS_STEP=<file> to release a field: running unpaused");
@@ -434,6 +457,10 @@ void tas_frame_advance_wait(void)
         host_sleep_ms(16);
     }
     step_granted = 0;  /* exactly the field this call releases */
+    /* The held time was host time: the game clock must not count it as steps of physics. The port
+       calls this for its own waits that are no game time (an online lobby, an app returning from
+       the background, fps.c). */
+    port_clock_rebase();
 }
 
 static TasFrame *find_frame(uint64_t field)
@@ -453,7 +480,8 @@ int tas_pad(int player, HostPad *out)
 {
     tas_init();
     if (!playing) return 0;
-    if (player < 0 || player >= TAS_PLAYERS) return 0;
+    /* Only player 1: a movie never takes pads 2-4 from the device or from a script. */
+    if (player != TAS_MOVIE_PLAYER) return 0;
     uint64_t field = (uint64_t)kernel_vsync_count;
     TasFrame *fr = find_frame(field);
     memset(out, 0, sizeof *out);
@@ -475,7 +503,7 @@ void tas_capture(int player, const HostPad *out)
 {
     tas_init();
     if (!recording) return;
-    if (player < 0 || player >= TAS_PLAYERS) return;
+    if (player != TAS_MOVIE_PLAYER) return;   /* only player 1 is recorded; the others keep neutral */
     uint64_t field = (uint64_t)kernel_vsync_count;
     if (!cur_rec_field_set || cur_rec_field != field) {
         memset(&cur_rec, 0, sizeof cur_rec);

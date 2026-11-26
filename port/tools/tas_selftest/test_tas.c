@@ -13,9 +13,13 @@ uint64_t kernel_vsync_count;
 static int online_stub;
 static int pad_calls;          /* fields whose pad came from the movie */
 static int window_closed;
+static int delta_clock;        /* port_delta_clock(): the game steps by wall time when 1 */
+static int rebase_calls;       /* port_clock_rebase(): the game clock's "no game time" resets */
 static HostPad last_pad;       /* what the game consumed this field */
 
 int pads_online(void) { return online_stub; }
+int port_delta_clock(void) { return delta_clock; }
+void port_clock_rebase(void) { rebase_calls++; }
 void host_service_gs_pump_messages(void) { }
 void host_service_gs_window_close(void) { window_closed = 1; }
 double host_wall_seconds(void)
@@ -69,8 +73,9 @@ static void field(void)
 
 static void state(const char *tag)
 {
-    printf("%s playing=%d recording=%d paused=%d pad_calls=%d pad=%04X %u %u\n", tag, tas_playing(),
-           tas_recording(), tas_paused(), pad_calls, last_pad.buttons, last_pad.right_x, last_pad.right_y);
+    printf("%s playing=%d recording=%d paused=%d pad_calls=%d rebases=%d pad=%04X %u %u\n", tag,
+           tas_playing(), tas_recording(), tas_paused(), pad_calls, rebase_calls, last_pad.buttons,
+           last_pad.right_x, last_pad.right_y);
     fflush(stdout);
 }
 
@@ -151,6 +156,42 @@ int main(int argc, char **argv)
     }
     if (!strcmp(sc, "nopause")) {
         field();
+        field();
+        state("after");
+        return 0;
+    }
+    if (!strcmp(sc, "other-pads")) {
+        /* a movie must not answer for pads 2-4, and must not record them */
+        HostPad other;
+        int taken;
+        memset(&other, 0xAA, sizeof other);
+        field();
+        taken = tas_pad(1, &other);
+        printf("other_pad_taken=%d untouched=%d\n", taken,
+               other.buttons == 0xAAAA && other.right_x == 0xAA);
+        state("after");
+        return 0;
+    }
+    if (!strcmp(sc, "record-other")) {
+        /* player 1's pad is recorded; a second pad's capture in the same field must not reach the file */
+        HostPad mine, other;
+        memset(&mine, 0, sizeof mine);
+        mine.buttons = PAD_CROSS;
+        mine.right_x = mine.right_y = mine.left_x = mine.left_y = 128;
+        mine.right_x = 99;
+        memset(&other, 0, sizeof other);
+        other.buttons = PAD_SQUARE;
+        other.right_x = 7;
+        tas_frame_advance_wait();
+        kernel_vsync_count++;
+        tas_capture(0, &mine);
+        tas_capture(1, &other);
+        tas_vsync();
+        state("after");
+        return 0;
+    }
+    if (!strcmp(sc, "clock")) {
+        delta_clock = atoi(getenv("STUB_DELTA_CLOCK") ? getenv("STUB_DELTA_CLOCK") : "0");
         field();
         state("after");
         return 0;
