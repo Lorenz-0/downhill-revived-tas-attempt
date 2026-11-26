@@ -290,7 +290,9 @@ pad read point, and the step.
 
 ## The road to savestates and rewind
 
-Not started, and not to be started before the game-level checks below. What this game's
+Not started, and not to be started before the game-level checks below. What a snapshot would have to
+carry, the one structural obstacle, the cost and the four experiments that decide it are worked out in
+**finding 286** (`286-savestates-feasibility.md`): it is a study, and it implements nothing. What this game's
 architecture says about it, from the audit:
 
 **A savestate here is a copy of this machine, not of a console.** The state is: 32 MB of EE RAM at

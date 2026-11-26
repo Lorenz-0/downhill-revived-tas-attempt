@@ -158,7 +158,8 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
   simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
   (`port/tools/tas_selftest.py`, docs/TESTING.md, 108 checks; POSIX and Windows timing, the
-  fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet;
+  fault-injection checks skipped where the linker has no `--wrap`). No savestates, rewind or editor yet (finding 286 works out what one would need,
+  and implements nothing);
   a movie is valid only for the boot that produced it. Validated by hand on Windows at `f612424`:
   the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and hold; a
   recorded run's trace equality with its playback is still untested.
