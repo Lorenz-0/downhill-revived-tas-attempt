@@ -60,6 +60,15 @@ static int images(void)
                 (double)(offsetof(Gs, sync) + kernel_bytes + pad_bytes) / (1024.0 * 1024.0));
         return 0;
     }
+    /* Touched now, so that memory this unit cannot have fails here with a line, not later inside a
+       copy of the machine. */
+    memset(gs_image, 0, offsetof(Gs, sync));
+    memset(kernel_image, 0, kernel_bytes);
+    memset(pad_image, 0, pad_bytes);
+    hle_log("savestate: images %.1f MB (gs %.1f, kernel %.1f, pad %.1f)\n",
+            (double)(offsetof(Gs, sync) + kernel_bytes + pad_bytes) / (1024.0 * 1024.0),
+            (double)offsetof(Gs, sync) / (1024.0 * 1024.0), (double)kernel_bytes / (1024.0 * 1024.0),
+            (double)pad_bytes / (1024.0 * 1024.0));
     return 1;
 }
 
@@ -67,7 +76,15 @@ static char save_path[512], load_path[512];
 static char quick_path[512];
 static int save_pending, load_pending, key_last;
 static unsigned long save_field;
-static int said_lines;
+static int said_lines, said_blocks;
+
+/* The blocks of the first save and the first load, in dhd.log: if one of them is where a run dies,
+   the last line says which (the later saves stay quiet). */
+static void log_block(const char *what, const char *name, uint32_t bytes)
+{
+    if (said_blocks) return;
+    hle_log("savestate: %s %-7s %u bytes\n", what, name, (unsigned)bytes);
+}
 
 static int session_live(void)
 {
@@ -120,9 +137,15 @@ static int collect(SsBlock *b)
     if (!images()) return 0;
     kernel_state_save(kernel_image);
     pad_state_save(pad_image);
+    /* Every packet the field fed has reached the GS state (state_trace.c waits the same way before
+       its own snapshot). */
+    host_service_graphics_wait();
     host_service_gs_snapshot(GADDR(gs_image), (uint32_t)offsetof(Gs, sync));
     add(b, &n, "ram", GUEST(0), 0x02000000u);
-    add(b, &n, "stacks", GUEST(0x06000000), 0x01000000u);
+    /* Not the 64 EE thread stacks at 0x06000000 (16 MiB): the host commits those page by page, per
+       slot, and copying the whole area reads pages that were never committed — which ends the
+       process with the guest's own fault, as the first save did on Windows. They are the same class
+       of state as the live frames (finding 286) and are not in a savestate yet. */
     add(b, &n, "scratch", GUEST(0x70000000), 0x4000u);
     add(b, &n, "hlew", GUEST(PS2_HLE_WINDOW), PS2_HLE_WINDOW_SIZE);
     add(b, &n, "vu", GUEST(0x11000000), 0x10000u);
@@ -163,8 +186,10 @@ int savestate_write_file(const char *path, const SsBlock *blocks, int count, uin
         memcpy(name, blocks[i].name, sizeof name);
         ok = fwrite(name, sizeof name, 1, f) == 1 && fwrite(&bytes, sizeof bytes, 1, f) == 1;
     }
-    for (int i = 0; i < count && ok; i++)
+    for (int i = 0; i < count && ok; i++) {
+        log_block("write", blocks[i].name, blocks[i].bytes);
         ok = fwrite(blocks[i].data, 1, blocks[i].bytes, f) == blocks[i].bytes;
+    }
     if (fclose(f) != 0) ok = 0;
     if (!ok) {
         hle_log("savestate: '%s' was not written whole\n", path);
@@ -179,9 +204,10 @@ int savestate_save(const char *path)
     int n = collect(b);
     if (!n) return 0;
     if (!savestate_write_file(path, b, n, (uint32_t)kernel_vsync_count)) return 0;
-    hle_log("savestate: saved '%s' at field %llu, %.1f MB (ram, stacks, scratch, the HLE window, VU, "
-            "the CPU, the GS, the kernel's threads and padman; not the live frames of a fresh boot)\n",
-            path, (unsigned long long)kernel_vsync_count, megabytes(b, n));
+    said_blocks = 1;
+    hle_log("savestate: saved '%s' at field %llu, %.1f MB (ram, scratch, the HLE window, VU, the CPU, "
+            "the GS, the kernel's threads and padman; not the EE stacks or the live frames — finding "
+            "286)\n", path, (unsigned long long)kernel_vsync_count, megabytes(b, n));
     return 1;
 }
 
@@ -233,6 +259,7 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
         return 0;
     }
     for (int i = 0; i < count; i++) {
+        log_block("read", blocks[i].name, blocks[i].bytes);
         if (fread(blocks[i].data, 1, blocks[i].bytes, f) != blocks[i].bytes) {
             fclose(f);
             hle_log("savestate: '%s' ended inside block %d ('%s')\n", path, i, blocks[i].name);
@@ -257,6 +284,7 @@ int savestate_load(const char *path)
     kernel_state_load(kernel_image);
     pad_state_load(pad_image);
     port_clock_rebase();
+    said_blocks = 1;
     hle_log("savestate: loaded '%s' at field %llu (saved at %u); the renderer's own caches are not "
             "state: a picture may be stale until the game redraws\n", path,
             (unsigned long long)kernel_vsync_count, (unsigned)field);

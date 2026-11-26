@@ -177,13 +177,23 @@ The authorisation for "save anywhere / load anywhere" arrived, so the first cut 
 host service (`host_service_gs_restore`, the exact inverse of the snapshot `gs.c` has given the trace
 all along).
 
-**What a savestate contains:** RAM, the EE thread stacks, the scratchpad, the HLE window, VU0/VU1's
-memory, the CPU's registers (block `cpu`), the whole GS prefix (4 MiB of VRAM and every register,
-through the existing snapshot service), the kernel's own state (256 threads with their saved
-registers, 512 semaphores, the alarms, the interrupt handlers and counters, the fields counted) and
-padman's. 52.3 MB, written and read in 24 MiB/s-ish memcpys; the whole file is checked — magic,
-version, block count, every block's name and size, and the file's own length — **before one byte of
-the machine is written**, so a file that is not this state is refused whole.
+**What a savestate contains:** RAM, the scratchpad, the HLE window, VU0/VU1's memory, the CPU's
+registers (block `cpu`), the whole GS prefix (4 MiB of VRAM and every register, through the existing
+snapshot service, after the field's graphics work has been waited for), the kernel's own state (256
+threads with their saved registers, 512 semaphores, the alarms, the interrupt handlers and counters,
+the fields counted) and padman's. **≈36.3 MB**; the whole file is checked — magic, version, block
+count, every block's name and size, and the file's own length — **before one byte of the machine is
+written**, so a file that is not this state is refused whole.
+
+**The first save on Windows ended the process, and why is worth keeping:** the block list included
+the 64 EE thread stacks, 16 MiB at 0x06000000, copied whole. The host commits those slots page by
+page, per thread, with a guard page each (`fiber.c`, `host64_memory_commit_stack`), so most of that
+16 MiB had never been committed and reading it is the guest's own fault — the process ended, no
+dialog, exactly as a wild access does. The stacks are out of the list: they are the continuation of
+suspended threads, the same class as the live frames below, and putting them back properly needs a
+host service that copies one slot's used pages rather than an address range. The first save and the
+first load now write one line per block (`savestate: write ram 33554432 bytes`, ...) so that a run
+that dies in one of them says which.
 
 **How it is used:** F5 saves to `dhd-quicksave.state` and F8 loads it back, live in a TAS session (a
 movie, a control file, `DHD_TAS_KEYS`, or a savestate variable of its own), so an ordinary player's

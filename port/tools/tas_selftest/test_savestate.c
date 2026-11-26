@@ -35,6 +35,7 @@ const char *host_getenv(const char *name) { (void)name; return NULL; }
 int host_service_keyboard_focused(void) { return 0; }
 int host_service_keyboard_key(unsigned vk) { (void)vk; return 0; }
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
+void host_service_graphics_wait(void) {}
 void host_service_gs_restore(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void port_clock_rebase(void) {}
 uint32_t kernel_state_size(void) { return 8; }
