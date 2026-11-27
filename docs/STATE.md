@@ -157,15 +157,17 @@ in `online/server/wrangler.jsonc`, player defaults are `port/render/settings/src
   field, P holds and releases the game (`DHD_TAS_KEYS=0` gives the keys back to the game), and
   `DHD_FRAME_PACE` (default on for a fixed-step run) keeps the pictures at the field rate while the
   simulation itself stays unpaced — the presentation is paced, the step is not. Its tests run on the host without the game
-  (`port/tools/tas_selftest.py`, docs/TESTING.md, 112 checks; POSIX and Windows timing, the
-  fault-injection checks skipped where the linker has no `--wrap`). A first cut of savestates (finding 286): Ctrl+5 saves 32.3 MB of
-  machine at a field boundary and Ctrl+8 loads it back in the same session (any session, off while online: the keys used to need a
-TAS one, which is how a report of "the game closes" was a log with no save in it at all), so a run can be retried from a field
-  instead of replayed; a load does not yet bring back the code's own live frames or the sound driver's
-  state. No rewind and no editor yet (finding 286 carries the plan and the measurements for both);
-  a movie is valid only for the boot that produced it. Validated by hand on Windows at `f612424`:
-  the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and hold; a
-  recorded run's trace equality with its playback is still untested.
+  (`port/tools/tas_selftest.py`, docs/TESTING.md, 113 checks; POSIX and Windows timing, the
+  fault-injection checks skipped where the linker has no `--wrap`). A first cut of savestates
+  (finding 286): Ctrl+5 saves a 33,866,816-byte field-boundary state and Ctrl+8 loads it back in the
+  same session, in any offline session. On Windows the menu round trip and a race save 600 fields
+  after GO both completed; the race load restored its field in the same process, the race continued,
+  and P/C/Space/1 still paused, stepped and resumed. A load does not yet bring back the code's own
+  live frames, the GS/renderer or the sound driver's state, and the stronger trace equality from N
+  to N+600 after a load is still untested. No rewind and no editor yet; a movie is valid only for the
+  boot that produced it, and its cursor is not restored by a savestate. Validated by hand on Windows
+  at `f612424`: the pictures hold ~60/s, P holds and releases, C/Space/1 advance one field each and
+  hold; a recorded run's trace equality with its playback is still untested.
 - The disc image's own check is one for every platform (`port/host/disc_check.c`, from host.c's
   `disc_problem`: ISO 9660, SYSTEM.CNF booting SCUS_971.77, the whole declared volume), then the
   game's data check in the core. Desktop launcher uses a Rust file-reader FFI adapter; Android's

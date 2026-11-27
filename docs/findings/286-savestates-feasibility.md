@@ -2,10 +2,10 @@
 
 Status: in progress
 
-Branch `arena/82a67d5f-downhill-revived-tas-attempt` from `main` 15f0ccc, 2026-11-26. This file is a
-feasibility study: it decides nothing by itself and **implements nothing**. Its job is to turn "a
-savestate would be nice" into a list of state, a measured obstacle, a cost, and four experiments
-whose results decide whether the thing is worth building and in what order.
+Branch `arena/82a67d5f-downhill-revived-tas-attempt` from `main` 15f0ccc, 2026-11-26. This finding
+began as a feasibility study: a list of state, a measured obstacle, a cost, and four experiments for
+the later work. Stage 1 is now implemented on this branch and measured on Windows; E1–E4 and
+Stage 2 remain future work, not something this cut quietly claims to have finished.
 
 It follows finding 285, which ended with the roadmap this continues ("The road to savestates and
 rewind"): the TAS foundation is in place — per-field movies, pause, frame advance, the keys — and a
@@ -18,20 +18,23 @@ that continuing from it is indistinguishable from never having stopped.** The us
 is rerecording: hold the game at field N, save, try inputs, and if the run goes wrong load N back
 instead of replaying 4000 fields. Rewind is the same machinery driven by a ring of checkpoints.
 
-A savestate is accepted when:
+Stage 1 is accepted for this cut when:
 
-- a run restored at field N and continued to field N+600 has the **same state trace**
-  (`DHD_STATE_TRACE`, `state_diff.py`) as a run that reached N+600 without saving — every section,
-  every field;
-- the picture after a load is the picture at N (pixel-equal, or within the tolerance the renderer's
-  own comparisons already use);
-- the sound after a load resumes where it was, with no restart of a stream (`bench_race.py --sound`
-  counts the gaps);
-- it refuses what the TAS refuses: an online session, a build that is not the one that wrote it, and
-  a load that disagrees with the movie's field.
+- a real Windows save completes during an active race, and a load resumes that race in the same
+  process;
+- the main-menu save/load round trip still works;
+- a malformed or incompatible file is refused before machine state is written;
+- online races still refuse both keys; and
+- the TAS keys still pause, release one field and resume during a race.
 
-Out of scope here: implementation, a rewind UI, cross-build savestates, savestates in online play or
-over a replay, and anything that edits guest memory by hand (the movie already covers input).
+The full savestate acceptance remains ahead: a run restored at N and continued to N+600 must have
+the same state trace as a run that never saved, the picture must match, and sound must continue
+without restarting a stream. Build identity and a movie's playback cursor also need an explicit
+policy before any cross-build or rerecording claim. Stage 1 does not claim those results.
+
+Out of scope for Stage 1: a rewind UI, cross-build or cross-process loading, online play, the code's
+live native frames, sound-driver state, GS/renderer state, and editing guest memory by hand (the
+movie already covers input).
 
 ## What "the state" is here, measured
 
@@ -58,18 +61,19 @@ boundary; a savestate has to carry everything the simulation can see, which is a
 | native stacks | one per active fiber, an 8 MiB mapping each (`fiber.c`), used part only | typical ≪ 1 MiB | **no**, deliberately | same process, or a re-map at the same address |
 
 Sum of the guest-visible blocks: **≈ 36.2 MiB**, plus ~0.4 MiB of HLE state and the used part of the
-native stacks. That is not a guess — every number is a `#define` or a `sizeof` in the files named.
+native stacks. That is the full inventory, not Stage 1's block list: the implemented seven-block
+file is ≈32.3 MiB and deliberately omits several rows above.
 
-Two facts make this list shorter than it looks:
+Two facts matter when reading the list:
 
-- **The renderer and the audio device are not state.** Both are re-creatable from the GS prefix (VRAM
-  and registers) and the sound driver's voices. The exact renderer can already replay a GS stream
-  (findings 025, 085), and the queue is a pipe, not a store.
-- **Guest addresses are fixed in every build** (`memory.h`), so a restore is a `memcpy` back and no
-  pointer anywhere needs fixing — except the host addresses in the code-pointer words, which already
-  have an identity mechanism (`codeids.py`) and are, like a movie, tied to the build that wrote them.
+- **The renderer and audio device are outside Stage 1's file.** The full design could recreate the
+  renderer from the GS prefix and audio from the sound driver's voices, but Stage 1 carries neither
+  source yet. Picture and sound continuity therefore remain unverified, not assumed.
+- **Guest addresses are fixed in every build** (`memory.h`), so a same-session restore can copy back
+  without fixing guest pointers. Host addresses in code-pointer words remain build-specific; the
+  identity mechanism (`codeids.py`) makes traces comparable, not savestates portable.
 
-## What already exists, and is the reason this is a study and not a research project
+## What already exists, and why the full design is tractable
 
 - `host_service_gs_snapshot(address, bytes)` (`port/gs/gs.c`) copies the entire `Gs` prefix — 4 MiB of
   VRAM, every register, the paths — into guest memory, asserting the size with `offsetof(Gs, sync)`.
@@ -77,14 +81,14 @@ Two facts make this list shorter than it looks:
 - `host_vu1_snapshot(address)` (`port/hle/vif.c`) does the same for VU1's register file.
 - `state_trace.c` is a **field-by-field, build-independent definition of what counts as game state**,
   with `DHD_STATE_DUMP` writing the raw section bytes out and `state_diff.py` comparing two runs. It
-  is exactly the instrument the acceptance above needs, and it already waits for the graphics workers
-  before it hashes (a checkpoint must be taken at that same quiet point, and by default it is the
-  default).
+  is the instrument the full acceptance above needs. It waits for graphics workers before hashing;
+  that trace quiet point is broader than the narrow deferred-read settlement Stage 1 needs before
+  copying RAM.
 - `fiber.c` already keeps, per slot, the three values a native-stack copy needs: the saved native
   stack pointer, the module's stack pointer and the call depth. The mapping's base is in the record.
 - The clock is deterministic on the fixed step (`DHD_FRAME_CLOCK=1`), which is what makes
   checkpoint-plus-replay exact instead of approximate. A movie's replay equality is the same
-  prerequisite and is still an open check in finding 285 — it should be closed before this stage.
+  prerequisite and remains an open check in finding 285; Stage 1 does not claim that result.
 
 ## The obstacle, stated exactly
 
@@ -111,17 +115,18 @@ layers that a restore still needs.
 
 ## Cost, and the shape of rewind
 
-- A checkpoint is ≈ 36.2 MiB uncompressed before the native stacks. **Compression is the open
-  number** (experiment E1): PS2 RAM compresses well in general, but "well" is not a number, and
-  12 MiB is the threshold that makes a disk-backed ring practical.
+- A full-design checkpoint is ≈ 36.2 MiB uncompressed before the native stacks; Stage 1's measured
+  seven-block file is 32.2 MiB. **Compression is the open number** (experiment E1): PS2 RAM compresses
+  well in general, but "well" is not a number, and 12 MiB is the threshold that makes a disk-backed
+  ring practical.
 - **Replay is fast enough to be the rewind mechanism.** This port's own benches (docs/STATE-LOG.md)
   measure 121–329 fields/s on desktops and 49–70 on phones *with the picture being drawn*; a replay
   with no picture is at least that. So five seconds of run (300 fields) costs ≈1–2.5 s of replay on a
   desktop and ≈5–6 s on a phone.
 - Therefore the shape is the one finding 285 named: **checkpoints plus replay, not a snapshot per
   field.** A checkpoint every ~5 s of run, a ring of a handful on disk, and rewind = "load the nearest
-  earlier checkpoint, replay to the target". A savestate file is one checkpoint plus the field it
-  belongs to and the boot it was taken on.
+  earlier checkpoint, replay to the target". The implemented file holds one checkpoint and its field;
+  it has no boot identifier and is constrained to the same session and build.
 
 ## The experiments that decide it
 
@@ -170,185 +175,121 @@ one run and one diff away, and it decides how much of this is a weekend and how 
    movie is (`codeids.py` identities make the *comparison* portable; a restore needs the addresses).
 6. **Online**: refused, as the TAS already refuses it, and for the same reason.
 
-## Stage 1, first cut: save and load in a session (this commit)
+## Stage 1: same-session save and load
 
-The authorisation for "save anywhere / load anywhere" arrived, so the first cut is in the tree:
-`port/hle/savestate.c` and its header, a state function pair in `kernel.c` and `pad.c`, and one new
-host service (`host_service_gs_restore`, the exact inverse of the snapshot `gs.c` has given the trace
-all along).
+Stage 1 is implemented on this branch in `port/hle/savestate.c`, with state functions in `kernel.c`
+and `pad.c`. It does not change the movie format, the simulation clock or the online race path.
 
-**What a savestate contains:** RAM, the scratchpad, the HLE window, VU0/VU1's memory, the CPU's
-registers (block `cpu`), the kernel's own state (256 threads with their saved registers, 512
-semaphores, the alarms, the interrupt handlers and counters, the fields counted) and padman's.
-**≈32.3 MB**; the whole file is checked — magic, version, block
-count, every block's name and size, and the file's own length — **before one byte of the machine is
-written**, so a file that is not this state is refused whole.
+### Format and guards
 
-**Two saves on Windows ended the process. The second one moved the whole unit onto ground it can
-stand on:**
+The file has seven blocks: RAM, scratchpad, the HLE window, VU memory, CPU registers, kernel state
+and pad state. The measured file is **33,866,816 bytes (32.2 MiB)**. The header is 24 bytes and each
+block's table entry is 28 bytes, so a seven-block file has 220 bytes before its data.
 
-- **The EE thread stacks** (16 MiB at 0x06000000) were in the block list, copied whole. The host
-  commits those slots page by page, per thread, with a guard page each
-  (`host64_memory_commit_stack`), so most of that area had never been committed and reading it is the
-  guest's own fault — the process ends, no dialog, exactly as a wild access does. They are out.
-- **The GS image** was a 4 MiB buffer. As a static it does not fit the module's data (the wasm link
-  refuses it); as the heap's it means growing the module's memory into a 4 MiB run, which is not
-  memory this unit can count on being committed — and that save died too. The GS is **streamed** now:
-  one 64 KiB static piece at a time, straight into (or out of) the file, through two new piece
-  services (`host_service_gs_image`, `host_service_gs_image_write`, the offset forms of the snapshot
-  and restore). Nothing in this unit is allocated and nothing is bigger than 64 KiB plus the kernel's
-  and padman's own images (≈205 KiB and 4 KiB, static).
+The reader checks the magic (`DHDSTAT1`), version, block count, every block name and size, and the
+file's exact length **before it writes machine state**. A wrong size, wrong name, short file or wrong
+magic is refused whole. The format has no independent build hash: it rejects incompatible layouts,
+but cross-build loading is not promised. The saved field travels in the header and is restored; it is
+not compared with the current field, because loading a checkpoint necessarily changes that field.
+The movie's own cursor is not restored, and a live movie is warned about rather than called
+reproducible.
 
-The keys are **Ctrl+5** (save) and **Ctrl+8** (load) rather than F5/F8, so a plain press of a key the
-game may want stays the game's, and the edge is only taken with Ctrl held.
+Ctrl+5 saves and Ctrl+8 loads at a field boundary in any offline session, movie or not. Plain 5 and
+8 remain the game's keys. `pads_online()` refuses both before a key is read, as the TAS refuses its
+own controls online. Scripted runs can use `DHD_SAVE_STATE`, `DHD_SAVE_FIELD` and `DHD_LOAD_STATE`.
 
-**The crash the third log finally showed, and its cause.** The log's last lines were
+### What the Windows runs found
 
-    savestate: write ram     33554432 bytes
-    host64 trap: Out-of-bounds access in linear memory or a table (EE fiber 1, wasm depth 0)
+The first Windows save ended the process because the block list copied all 64 EE thread stacks. Those
+slots are committed page by page and have guard pages, so reading the whole 16 MiB range touched
+pages that had never been committed. The stacks are not in the file.
 
-— the save died inside the first block. The block was `GUEST(0)` 32 MiB, which is PS2 address 0 …
-except that this unit is *module* code, and in the module PS2 address 0 is at **PS2_RAM_BASE
-(0x08000000)**, not at 0: the first 4 MiB of the module's memory is wasm-ld's shadow stack
-(`--stack-first`, committed by `host64_memory_commit_stack`) above a null guard page at [0, 0x4000),
-and the low RAM *view* starts at 0x00400000. A copy from 0 therefore reads the shadow stack and then
-the uncommitted guard page, and wasm2c's bounds check ends the process with an out-of-bounds trap —
-the same class of mistake as the EE stacks (reading a region because its address looked right), one
-layer down. The block now reads `PS2_RAM_BASE`, which is what `state_trace.c` has always used for
-RAM (`PS2_PTR`, `PS2_SCRATCHPAD`), and the scratchpad goes through `PS2_SCRATCHPAD` by name.
+A 4 MiB static GS image then exceeded the module's data space. Streaming it worked in the main menu,
+but the broad `host_service_graphics_wait()` used before the copy froze a race: the port defers the
+vsync and overlaps drawing with the next field, so waiting there stalls the pipeline. The GS block
+and that wait were removed. A later version briefly put the GS back; it is not in the current format.
 
-**And the GS is not in a savestate (it was, for two builds).** Its 4 MiB prefix went in through the
-snapshot service after `host_service_graphics_wait()`, and that wait is the one thing a save does that
-a menu save does not need: the port draws on worker threads and defers the vsync (finding 090 HO1),
-so a wait for the drawing from inside the field's vblank is a synchronous stall in a pipeline that
-the *next* field is meant to overlap — `state_trace.c` says as much and offers `DHD_STATE_NOWAIT=1`
-to skip it. The first save, in the main menu, worked and loaded (field 1602, 36.3 MB, every block);
-the second, in a race, never returned: no `savestate: saved` line, and the freeze log's dump put the
-game thread outside the exe with the same translated-code frames as the earlier trap. So the block is
-gone, with the wait, and the unit is what its own rule says the renderer is — not state: RAM, the
-scratchpad, the HLE window, VU memory, the CPU, the kernel and padman, ≈32.3 MB, no host call in the
-save path at all but the file itself. The GS comes back when there is a point in the field where the
-workers are quiet by construction, not when one can be waited for.
+The next crash was a plain address mistake. The RAM block read module address 0, but PS2 RAM begins at
+`PS2_RAM_BASE` inside the module; address 0 is the shadow stack and guard area. The log ended with
+`Out-of-bounds access in linear memory or a table`. RAM now reads `PS2_RAM_BASE`, and scratchpad uses
+`PS2_SCRATCHPAD`.
 
-**The race save's next log says it is the RAM write.** With the GS and its wait gone, the same
-report came back: `savestate: write ram 33554432 bytes`, then `freeze: no field for 5 s at field
-7084: menu 9 phase 1` — `0x29DED8` is 9 in a race and the phase 1 is the countdown (finding 024), so
-this is a race, at the first block, with no trap this time but a hang. The same 32 MiB write in the
-main menu had already worked (field 1602), and a menu save does not differ from a race save in
-anything else this unit does. So: the write is now a megabyte to a piece, with a breadcrumb per
-piece, which says how far into RAM a run got (and bounds each `fwrite`); `DHD_QUICKSAVE=<path>` puts
-the file elsewhere, so a save on a local disk rules the game's own drive out (a network or virtual
-one, the one the report's build folder is on); and the game thread's frames in the freeze dump want
-naming with `port/tools/host64_rva.py <map> <log>`, which says whether the hang is in the file write
-or in a wait. The TAS keys, separately, were never broken: they are the game's unless a session
-claims them (mission 7's rule), and the first field now says so — `DHD_TAS_KEYS=1` claims them.
+The race freeze remained after those fixes. Timestamped, one-megabyte breadcrumbs showed the file
+stop at exactly **7,340,252 bytes = 220 + 7 × 1,048,576**: the table and all seven RAM pieces had
+been written, then the process stopped. Symbolizing the frozen thread with that run's map resolved
+the instruction to **`NtWriteFile+0x14`**, a real write stall rather than a guessed slow disk. The
+same full save froze on both the build volume and a local system disk. `DHD_SAVE_SMALL=1` completed,
+and a full save with deferred reads disabled completed at the same field in about 0.016 seconds.
 
-**The breadcrumb a report brought was one line:** `save: block ram 33554432 bytes` and nothing else,
-so the save stops inside the first block. Its build was older than the megabyte pieces, so it cannot
-say whether the write was stuck or slow. The next build answers that three ways: every line carries
-the wall-clock seconds it was written (a slow write and a stuck one look alike otherwise, and the gap
-between two lines is the call between them); the write is a megabyte a piece with a line each;
-and `DHD_SAVE_SMALL=1` leaves RAM out, which is the one test that separates "the big write hangs"
-from "something else does" — the state it writes cannot be loaded back, and says so.
+The difference was the RAM pages, not the file. Deferred GS store-image reads temporarily protect
+their destination PS2 RAM pages with `PAGE_NOACCESS`. File I/O cannot take that fault and settle the
+read, so passing those pages to `fwrite` stalled. `autopad.c`'s RAM dump and `cdvd.c`'s reads already
+call `graphics_settle()` for this reason; the savestate path had omitted it.
 
-**What the first two logs a report came with actually contained** (worth keeping, because between
-them they show what a missing line means): one ended `exit game: chosen in the main menu`, `end:
-closing (code 0)` and the session's `perf:` line — the port's graceful exit, no savestate line
-anywhere; the other was nine lines long, `Downhill Revived: No disc image is chosen.` and `end:
-closing (code 0)` — a launch with no disc chosen, the game never booted, so the module (and this
-unit with it) never ran. Neither was a crash, and neither is the report's crash: the file a crash
-writes is `dhd.log` **of that run**, and its own line first (`Downhill Revived 0.8.13 (dhd-port …
-<hash>)`, a different hash every build).
+### The fix
 
-So this unit also keeps `savestate-trace.txt` beside the game: one line per action, the file opened
-and closed per line, so the last line is on disk before anything can end the process. `boot: …`
-means the build has this and reached the first field; a `key: Ctrl+5` line without a `save:` line
-means the key was read; `save: block ram 33554432 bytes` with nothing after it means the process
-ended inside that block; no `boot:` line at all means the exe is not this build (or the game never
-started).
+The fix is two calls, with no format change and no unconditional return to the broad graphics wait:
 
-**And the third "the game dies" report was not a die at all.** Its log ended
-`game: the front end runs`, `exit game: chosen in the main menu`, `end: closing (code 0)` and the
-whole session's `perf:` line after it — the port's own graceful exit, with no savestate line
-anywhere. The keys were behind the TAS session's gate (a movie, a control file, `DHD_TAS_KEYS`, or a
-`DHD_SAVE_STATE`/`DHD_LOAD_STATE`), no session was live, so Ctrl+5 was never read; what the log
-recorded was the player leaving the menu afterwards. The gate is gone: the keys save and load in any
-session, and are refused only while an online race is (the TAS's own rule). `savestate_init` also
-says the keys' names on the first line of every session now, so a report's log says which build made
-it and whether this feature is in it — the absence of that line, not a crash, is what a stale build
-looks like.
+- save calls `graphics_settle()` before collecting the blocks, so every RAM page is readable;
+- load calls it only after the whole-file metadata, block table, exact length and first-block seek
+  have succeeded, immediately before reading block bytes into the machine.
 
-**The first save on Windows ended the process, and why is worth keeping:** the block list included
-the 64 EE thread stacks, 16 MiB at 0x06000000, copied whole. The host commits those slots page by
-page, per thread, with a guard page each (`fiber.c`, `host64_memory_commit_stack`), so most of that
-16 MiB had never been committed and reading it is the guest's own fault — the process ended, no
-dialog, exactly as a wild access does. The stacks are out of the list: they are the continuation of
-suspended threads, the same class as the live frames below, and putting them back properly needs a
-host service that copies one slot's used pages rather than an address range. The first save and the
-first load now write one line per block (`savestate: write ram 33554432 bytes`, ...) so that a run
-that dies in one of them says which.
+That ordering keeps a refused file from settling deferred work or touching machine state. The save
+path adds no unconditional rendering wait; it lets already-queued reads finish and restores the pages
+they protected.
 
-**How it is used:** F5 saves to `dhd-quicksave.state` and F8 loads it back, live in a TAS session (a
-movie, a control file, `DHD_TAS_KEYS`, or a savestate variable of its own), so an ordinary player's
-F5/F8 stay the game's. For a scripted run, `DHD_SAVE_STATE=<file>` (with `DHD_SAVE_FIELD=<n>` to
-choose the field) and `DHD_LOAD_STATE=<file>`. Both are taken and applied at the field boundary the
-state trace hashes at, after the graphics work the field started has been waited for.
+### Breadcrumbs
 
-**What is knowingly missing, in the order it will show:**
+`savestate-trace.txt` keeps one line per action, with wall-clock seconds, a line per megabyte and a
+line per block. The WASI adapter ignores append flags and currently truncates a writable create, so
+opening the breadcrumb with `"a"` overwrote its own history. The file now stays open in `"w"` mode
+for the session and flushes every line. A missing line therefore still identifies the call that did
+not return, without losing the lines before it.
 
-- **the live frames** — the recompiled code's own C frames and each fibre's native stack. They are
-  host memory a fresh boot has not got, which is why a load is supported *within the session that
-  saved*: F5, play, F8, retry — the rerecording loop, which is what a savestate is for here. A file
-  loaded into a fresh boot will restore the machine and then resume on the new process's frames: it
-  may work, it may diverge, and the log says so instead of pretending.
-- **the renderer's caches and the audio device**: the GS is back, but the native renderer may hold a
-  stale texture or pipeline for a field until the game redraws; the sound driver's own state is not
-  yet in the file (the voices restart). Both are named in the load's log line.
-- **open files and the disc's position** are left alone (they are the same files).
-- **the field counter is restored with the state**, so a trace comparison of "load at N and run 600
-  fields" against "run to N+600" is a straight diff (`DHD_STATE_TRACE`, `state_diff.py`).
+### Verification
 
-**One build failure, and what it taught:** the first cut held the GS image as a 4 MiB static, and
-the wasm link refused it — `wasm-ld: error: initial memory too small, 1897499920 bytes needed`. The
-core's data image runs from 0x70200000 to about 0x70D9C000 and its initial memory ends at 0x70E00000
-(`build_wasm.py`), so there is roughly 800 KB of room for new statics in the whole module, not 4 MB.
-The images are the heap's now, allocated at the first save and sized by their owners, which is the
-same place `state_trace.c` puts the packet it hands to `host_service_gs_trace_pop` — so nothing new
-is in the module's data at all, and the initial memory is untouched.
+`tas_selftest.py` reports **113 checks, 0 failed, 9 skipped** on Windows. The savestate harness uses
+the real reader and writer, proves a valid load settles deferred reads once, and proves all four
+wrong files are refused with **zero settlement calls and untouched targets**. The existing TAS
+online tests still pass; `online_blocks()` itself is unchanged. `check.py port -j 16` passed every
+step, including the renderer, network, launcher and stack-analysis checks.
 
-**Verified here:** `tas_selftest.py` **112 checks, 0 failed** — four new, from `test_savestate.c`,
-which drives the same reader and writer the game does over three small blocks and refuses four wrong
-files (another size, another name, a short file, not a savestate) while proving the targets are
-untouched. Compiles clean with `-Wall -Wextra` on the host and for `wasm32` (`savestate.c`,
-`kernel.c`, `pad.c`); the browser's graphics reactor folds the new guest address
-(`build_graphics.py`).
+The final race acceptance used the executable with SHA-256
+`c6e263220e8c2ddfbcdadfd82aba7e6c2b229cf33b52f7de56d812520adc9971` and map SHA-256
+`0338e78ec532b38908b1e9b20bb3fac00c41315626eeaca8c42ff0ea98d3b70a`.
+The menu round trip and real refusal below were verified on an earlier build of the same source
+change:
 
-**Not verified here, and it is the whole question:** whether a load continues the same run. That
-needs the game, and the honest test is one sentence long — trace a run, save at a field, load, run
-600 fields, and diff the two traces. The layers most likely to show up in that diff are the two
-above, and each has a next step ready (native stacks through a host service; the sound driver's
-tables, unit by unit as `kernel.c` and `pad.c` did).
+- **Main menu:** Ctrl+5 saved field 563 and Ctrl+8 loaded it in the same process. The file was
+  33,866,816 bytes, the process stayed alive and its PID did not change. The breadcrumbs show about
+  0.02 seconds for the save and 0.01 seconds for the load.
+- **Race:** the scripted race saved at field 3815, 600 fields (10 seconds at 60) after GO. The file
+  was 33,866,816 bytes, the save breadcrumb span was about 0.01 seconds and the process stayed alive.
+  The race advanced to field 3840; Ctrl+8 was read at field 3892 and restored field 3815 in the same
+  process. The next capture at field 3900 proved the race continued. P paused it; C, Space and 1
+  released fields 3922, 3923 and 3924; P released the pause and the race advanced to field 3960.
+- **No ordinary-game change:** deterministic base-versus-fixed traces printed PASS for all 600 boot
+  rows and all 5000 race rows. The base executable was
+  `50c49fdd052066edc82e39ce1561ef441bda09a08a1a713bb2a20f526ea9020c`.
+- **Real refusal:** a valid state with one extra byte was offered to a fresh run. The log said
+  `refused whole`, and its 600-row boot trace matched the untouched boot exactly.
 
-## Decision requested
+### Known limits
 
-Nothing here is built. Three stages, each needing its own authorisation:
+- Loading is supported only in the session that saved. The code's live C frames and native stacks
+  are not in the file, so a fresh process is not a supported restore.
+- The GS, renderer caches and sound-driver state are not restored. A picture may be stale until the
+  game redraws, and audio continuity has not been measured.
+- Open files and the disc's position are left alone.
+- The field counter is restored, but the full “load at N, continue to N+600, compare every section”
+  acceptance has not been run. The successful race continuation above is not a claim of that
+  stronger equality.
+- The movie cursor is not restored. A recorded movie's trace equality with playback also remains
+  the open check named in finding 285.
+- E1–E4 (compression, live-stack size, layered restore equality, sound/picture continuity) remain
+  measurements for later work.
 
-- **Stage 0 — measurement only (throwaway).** E1, E2 and the E3 bisection behind `DHD_STATE_LOAD`,
-  in the port tree, not shipped, no UI. Output: the numbers, the layer list, and a yes or no.
-- **Stage 1 — save and load (product).** Done as the first cut above (F5/F8 and
-  `DHD_SAVE_STATE`/`DHD_LOAD_STATE`); what remains is what its first run's diff says, and the
-  sound driver's state if audio matters to the loop.
-- **Stage 2 — rewind.** The checkpoint ring and replay behind it, once Stage 1's equality holds.
+### Later stages
 
-Recommendation: Stage 0 first. It is small, it answers the only questions that matter, and it produces
-the two numbers (E1's size, E3's layer list) that make Stage 1 estimable instead of optimistic.
-
-## What can and cannot be checked where
-
-Checked while writing this: the inventory (every size is a `#define` or a `sizeof` in the named file),
-the existing snapshot paths (`gs.c`, `vif.c`), the trace's sections and dump option, the fibre record,
-the fixed guest addresses, and the throughput figures quoted from docs/STATE-LOG.md.
-
-Not checked, and not checkable in this lane: anything that needs the game — booting it, running a
-race, taking a real dump, compressing it, or any of E1–E4. This lane has no disc, no GPU and no
-Windows toolchain; every experiment above needs the user's PC.
+Stage 1 is complete on this branch but not merged, so this finding remains `in progress`. Stage 2
+— a checkpoint ring and replay-driven rewind — has not started and needs its own authorisation.

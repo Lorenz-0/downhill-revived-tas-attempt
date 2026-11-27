@@ -219,10 +219,12 @@ def main():
         rc, out, err = run(built(ss), [], {})
         check('a savestate writes and reads its blocks back', 'roundtrip wrote=1 read=1 equal=1' in out, out + err)
         check('and carries the field it belongs to', 'field=4242 field-ok=1' in out, out + err)
+        check('a valid load settles deferred reads before it reads the blocks',
+              'roundtrip wrote=1 read=1 equal=1 field=4242 field-ok=1 settles=1' in out, out + err)
         check('a file of another size, another block or another length is refused whole',
-              'refusals size=1 name=1 short=1 magic=1' in out, out + err)
-        check('a savestate is refused before the machine is touched',
-              'refused whole' in err or not err, out + err)
+              'refusals size=1 name=1 short=1 magic=1 settles=0' in out, out + err)
+        check('a refused savestate leaves both deferred reads and machine state untouched',
+              'refusals size=1 name=1 short=1 magic=1 settles=0' in out, out + err)
     else:
         check('a savestate writes and reads its blocks back', False,
               'test_savestate.c did not build: ' + (p.stderr or p.stdout)[-300:])

@@ -1,32 +1,4 @@
-/* A savestate for the TAS (finding 286, stage 1). See savestate.h.
-
-   The blocks are the state trace's own list where it can be reached — RAM, the scratchpad, the HLE
-   window, VU0/VU1's memory, the CPU's registers — plus the GS prefix (streamed, below) and the two
-   layers the trace leaves out because they are host state: the kernel's threads, semaphores, alarms
-   and counters, and padman's frames. The renderer, the sound device, the disc's open files and the
-   graphics queue are not state in this sense (finding 286: they are re-creatable or re-openable).
-
-   Two things this unit has learned the hard way, both of them about where a copy may read and write:
-
-   - The 64 EE thread stacks at 0x06000000 are committed page by page, per slot, with a guard page
-     each: copying the whole 16 MiB area reads pages that were never committed and the process ends
-     as the guest's own fault does. They are not in a savestate (finding 286).
-   - A 4 MiB array here does not fit the module's data — the wasm link refuses it ("initial memory
-     too small"). The GS prefix was streamed through a 64 KiB piece at a time instead, behind a wait
-     for the graphics workers, and that wait is what this unit no longer does: the port draws on
-     worker threads and defers the vsync (finding 090 HO1), so waiting for the drawing from inside
-     the field stalls the pipeline the next field needs. A save in the main menu worked and a save
-     in a race never returned (finding 286). The GS is not in a savestate now, which is what this
-     unit's own rule says happened to the renderer's caches: they are re-creatable, not state. It
-     comes back when there is a point in the field where the workers are quiet by construction.
-
-   A savestate belongs to the session and the build that wrote it: the code's live frames are host
-   memory that a fresh boot has not got (finding 286's one obstacle), so loading is supported within
-   the session that saved.
-
-   The keys save and load in any session, movie or not (a player practising a track has no movie
-   either), and are off while an online race is: that is the TAS's rule and this is the TAS's state.
-   The first log line says the keys are there, so a report's log says whether the build has them. */
+/* Same-session field-boundary savestates for the TAS (finding 286, stage 1). */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,28 +15,29 @@ extern ps2_cpu ps2;
 extern uint64_t kernel_vsync_count;   /* kernel.c: the field a savestate belongs to */
 
 /* A breadcrumb beside the log: dhd.log is a whole session and a report may arrive with another
-   run's (two did), so every action here also appends one line to savestate-trace.txt, opened and
-   closed per line so that the last line is on disk before anything can end the process. The last
-   line a run wrote is where it died, or how far it got before the key was ever read.
+   run's (two did), so every action here also writes one line to savestate-trace.txt. The file stays
+   open and each line is flushed: the hosts do not all honor append mode, and the last line must be
+   on disk before anything can end the process.
    Not in the game's log except first-time block lines: at 165 fields/s a save's eight lines per
    press belong in this file, not in dhd.log. */
 #define SS_TRACE "savestate-trace.txt"
+static FILE *crumb_file;
 static double crumb_start;   /* the boot's clock, so every line says when it was written */
 static void breadcrumb(const char *fmt, ...)
 {
     va_list ap;
-    FILE *f = fopen(SS_TRACE, "a");
-    if (!f) return;
+    if (!crumb_file) crumb_file = fopen(SS_TRACE, "w");
+    if (!crumb_file) return;
     double now = host_wall_seconds();
     if (crumb_start <= 0) crumb_start = now;
     /* The time on every line: a write that is slow and a write that is stuck look the same
        otherwise, and a gap between two lines is the call between them. */
-    fprintf(f, "%8.2f  ", now - crumb_start);
+    fprintf(crumb_file, "%8.2f  ", now - crumb_start);
     va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
+    vfprintf(crumb_file, fmt, ap);
     va_end(ap);
-    fputc('\n', f);
-    fclose(f);
+    fputc('\n', crumb_file);
+    fflush(crumb_file);
 }
 
 /* The format. A block is a name and its bytes, in a fixed order: the reader checks every name and
@@ -270,6 +243,8 @@ int savestate_save(const char *path)
         if (small && *small && strcmp(small, "0") != 0)
             breadcrumb("save: DHD_SAVE_SMALL: no RAM in this state (a test, not a savestate)");
     }
+    /* File I/O cannot fault on pages protected by deferred store-image reads. */
+    graphics_settle();
     int n = collect(b);
     if (!n) {
         breadcrumb("save: refused, nothing collected");
@@ -331,6 +306,7 @@ int savestate_read_file(const char *path, const SsBlock *blocks, int count, uint
         hle_log("savestate: '%s' cannot be read from its first block\n", path);
         return 0;
     }
+    graphics_settle();
     for (int i = 0; i < count; i++) {
         if (!get(f, &blocks[i])) {
             fclose(f);

@@ -290,10 +290,10 @@ pad read point, and the step.
 
 ## The road to savestates and rewind
 
-Not started, and not to be started before the game-level checks below. What a snapshot would have to
-carry, the one structural obstacle, the cost and the four experiments that decide it are worked out in
-**finding 286** (`286-savestates-feasibility.md`): it is a study, and it implements nothing. What this game's
-architecture says about it, from the audit:
+Stage 1 now exists as a same-session save/load cut; its Windows measurements and remaining limits are
+in **finding 286** (`286-savestates-feasibility.md`). That finding began as the feasibility study below.
+Stage 2 (rewind) has not started and still needs its own authorisation. What this game's architecture
+says about a full snapshot, from the audit:
 
 **A savestate here is a copy of this machine, not of a console.** The state is: 32 MB of EE RAM at
 a fixed host address (`memory.h`, `PS2_RAM_BASE`); the 16 MB of EE thread stacks

@@ -36,6 +36,8 @@ int host_service_keyboard_focused(void) { return 0; }
 int host_service_keyboard_key(unsigned vk) { (void)vk; return 0; }
 void host_service_gs_snapshot(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void host_service_graphics_wait(void) {}
+static int settle_calls;
+void graphics_settle(void) { settle_calls++; }
 void host_service_gs_restore(uint32_t address, uint32_t bytes) { (void)address; (void)bytes; }
 void port_clock_rebase(void) {}
 double host_wall_seconds(void) { return 0; }
@@ -67,6 +69,7 @@ int main(void)
     uint32_t field = 0;
     int wrote, read, equal, field_ok;
     int refused_size, refused_name, refused_short, refused_magic;
+    int roundtrip_settles;
 
     unused_log();
     fill(a, sizeof a, 3), fill(b, sizeof b, 91), fill(c, sizeof c, 200);
@@ -76,11 +79,12 @@ int main(void)
     read = savestate_read_file(path, in, 3, &field);
     equal = same(a, a2, sizeof a) && same(b, b2, sizeof b) && same(c, c2, sizeof c);
     field_ok = field == 4242;
-    printf("roundtrip wrote=%d read=%d equal=%d field=%u field-ok=%d\n", wrote, read, equal,
-           (unsigned)field, field_ok);
+    roundtrip_settles = settle_calls;
+    printf("roundtrip wrote=%d read=%d equal=%d field=%u field-ok=%d settles=%d\n", wrote, read, equal,
+           (unsigned)field, field_ok, roundtrip_settles);
 
-    /* a block of another size: refused, and the targets are untouched (they were filled by the
-       reader only after every name and size matched) */
+    /* a block of another size: refused before deferred reads are settled or a target is touched */
+    settle_calls = 0;
     memset(a2, 0, sizeof a2);
     {
         SsBlock wrong[3] = {{"ram-ish", a2, sizeof a2 - 1}, {"gs-ish", b2, sizeof b2}, {"pad-ish", c2, sizeof c2}};
@@ -108,8 +112,8 @@ int main(void)
         memset(a2, 0, sizeof a2);
         refused_magic = savestate_read_file(bad, in, 3, NULL) == 0 && a2[0] == 0;
     }
-    printf("refusals size=%d name=%d short=%d magic=%d\n",
-           refused_size, refused_name, refused_short, refused_magic);
+    printf("refusals size=%d name=%d short=%d magic=%d settles=%d\n",
+           refused_size, refused_name, refused_short, refused_magic, settle_calls);
     fflush(stdout);
     remove(path);
     remove(bad);

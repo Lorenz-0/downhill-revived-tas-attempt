@@ -117,12 +117,14 @@ spacing taken from the game's frame rate setting rather than the field's.
 
 The savestate's file (finding 286, `savestate.c`) is tested the same way and without a machine: three
 small blocks go through the same writer and reader the game uses and come back equal, the field
-travels with them, and four wrong files — another block size, another name, a short file, something
-that is not a savestate — are each refused whole, before one byte of the machine is written.
+travels with them, and a valid load settles deferred reads once before it reads the blocks. Four
+wrong files — another block size, another name, a short file, something that is not a savestate —
+are each refused whole, with zero settlement calls and untouched targets, before one byte of the
+machine is written.
 
     python port/tools/tas_selftest.py
 
-112 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
+113 checks, seconds, a C compiler and nothing else (`cc`, `gcc`, `clang`, or `DHD_CC`). What they
 cover: the stub host's own clock first (monotonic, and a sleep that really sleeps, because the
 unit's pause gate times a 4 ms sleep to decide whether it may hold the game); the TAS's own keys
 (C, Space and 1 release one field, P holds and releases the game, a held key gives nothing more,
@@ -154,7 +156,7 @@ never `PASS` (the summary counts them):
   every ordinary check still runs.
 - **Windows has no `/dev/full`**, so the header-write-failure pair reports `SKIP`; an
   unopenable recording path (a directory) is still checked on both.
-- So Linux with gcc: 74 pass. Windows with clang: 65 pass, 9 skip.
+- So Linux with gcc and GNU ld: 113 pass. Windows with clang: 104 pass, 9 skip.
 
 The runner prints a `note` line whenever it skips a family, naming the reason, and exits nonzero
 only for a real failure.
